@@ -154,7 +154,8 @@ function! dbui_multidb#administrative#backup_file() abort dict
   return dbui_multidb#backup#restore(db, get(item, 'dbui_backup_file', ''))
 endfunction
 
-" d on a backup file entry: delete the file (and the log next to it).
+" d on a backup file entry: delete the file (and the log next to it) after a
+" confirmation.
 function! dbui_multidb#administrative#delete_file(drawer, item) abort
   let db = get(a:drawer.dbui.dbs, get(a:item, 'dbui_db_key_name', ''), {})
   if type(db) !=# type({}) || empty(db)

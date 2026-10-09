@@ -482,10 +482,21 @@ function! s:test_backups_section() abort
   call s:eq(len(g:dbui_multidb_test_backup_plans), 1, 'an unsupported restore never reaches the runner')
   call s:ok(s:notifications[-1].message =~# 'not available', 'the unsupported restore says it is not available')
 
-  " d on a file entry deletes it, and the section re-renders without it.
+  " d on a file entry asks first: a declined confirmation leaves it alone.
+  function! dbui_multidb#backup#confirm(question) abort
+    return 0
+  endfunction
   call cursor(section + 3, 1)
   call drawer.delete_line()
-  call s:eq(filereadable(older), 0, 'd deletes the backup file')
+  call s:eq(filereadable(older), 1, 'a declined delete leaves the file')
+
+  " an accepted confirmation deletes it, and the section re-renders without it.
+  function! dbui_multidb#backup#confirm(question) abort
+    return 1
+  endfunction
+  call cursor(section + 3, 1)
+  call drawer.delete_line()
+  call s:eq(filereadable(older), 0, 'd deletes the backup file after confirmation')
   let lines = getline(1, '$')
   call s:ok(s:index_of(lines, '20240101-120000') < 0, 'the deleted file leaves the section')
 
@@ -499,6 +510,7 @@ function! s:test_backups_section() abort
   call s:ok(filereadable(g:dbui_multidb_backup_dir . '/alpha-kept.sqlite3'),
         \ 'the renamed file keeps its prefix and extension')
 
+  runtime autoload/dbui_multidb/backup.vim
   runtime autoload/db_ui/utils.vim
   call s:end_capture()
 endfunction
@@ -574,11 +586,20 @@ function! s:test_backup_files() abort
   call s:eq(g:dbui_multidb_test_backup_plans[0].verb, 'Restore', 'the recorded plan is a restore')
   runtime autoload/dbui_multidb/backup.vim
 
-  " delete_file refuses a foreign file, deletes an owned one with its log.
+  " delete_file refuses a foreign file before asking, then asks for an owned one.
   call s:eq(dbui_multidb#backup#delete_file({'url': 'mongodb://u@h/alpha', 'name': 'alpha'}, g:dbui_multidb_backup_dir . '/beta-20240101-000000.sqlite3'), 0,
         \ 'a foreign file is refused')
+  function! dbui_multidb#backup#confirm(question) abort
+    return 0
+  endfunction
+  call s:eq(dbui_multidb#backup#delete_file({'url': 'mongodb://u@h/alpha', 'name': 'alpha'}, f_old), 0,
+        \ 'a declined delete leaves the file')
+  call s:eq(filereadable(f_old), 1, 'the file survives a decline')
+  function! dbui_multidb#backup#confirm(question) abort
+    return 1
+  endfunction
   call s:eq(dbui_multidb#backup#delete_file({'url': 'mongodb://u@h/alpha', 'name': 'alpha'}, f_old), 1,
-        \ 'an owned file is deleted')
+        \ 'an owned file is deleted after confirmation')
   call s:eq(filereadable(f_old), 0, 'the file is gone')
   call s:eq(filereadable(g:dbui_multidb_backup_dir . '/alpha-20240101-120000.log'), 0, 'the log next to it is gone')
 
@@ -589,6 +610,7 @@ function! s:test_backup_files() abort
   let third = g:dbui_multidb_backup_dir . '/alpha-20240303-000000.archive.gz'
   call writefile([], third)
   call s:eq(dbui_multidb#backup#rename_file(third, 'kept', 'alpha-'), 0, 'rename refuses an existing target')
+  runtime autoload/dbui_multidb/backup.vim
 endfunction
 
 " The command lines: every built-in scheme, the override forms, redaction, the

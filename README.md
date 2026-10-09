@@ -186,7 +186,7 @@ loads, so set it in your configuration; changed later, it needs
 An **expanded** client-side database ends with a **Backups** section; expand it to see
 the backup files that connection owns (newest first) and a **New backup** action.
 `<CR>` on **New backup** starts a backup of that database; `<CR>` on a file restores it
-into the database it came from (after a confirmation), `d` deletes it, and `r` renames
+into the database it came from and `d` deletes it — both ask for confirmation first — and `r` renames
 it. A backup or restore is a detached job: the editor is never blocked, and a
 notification reports when it starts and again when it finishes (or fails, with the log
 to read). Passwords never reach a notification: the command is built from the

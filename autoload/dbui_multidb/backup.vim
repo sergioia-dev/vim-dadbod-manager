@@ -420,8 +420,9 @@ function! dbui_multidb#backup#restore(db, file) abort
   return s:dispatch(plan)
 endfunction
 
-" Delete a backup file and the log next to it. Only the files the section
-" lists are accepted, so a mistyped path cannot remove something else.
+" Delete a backup file and the log next to it, after a confirmation. Only the
+" files the section lists are accepted, so a mistyped path cannot remove
+" something else.
 function! dbui_multidb#backup#delete_file(db, file) abort
   let path = s:file_path(a:file)
   if empty(path) || !filereadable(path)
@@ -440,6 +441,9 @@ function! dbui_multidb#backup#delete_file(db, file) abort
   if !owned
     call dbui_multidb#notify#error(printf('vim-dadbod-manager: %s is not a backup of this connection.',
           \ fnamemodify(path, ':~')))
+    return 0
+  endif
+  if !dbui_multidb#backup#confirm(printf('Delete %s? This also removes its log.', fnamemodify(path, ':t')))
     return 0
   endif
 
