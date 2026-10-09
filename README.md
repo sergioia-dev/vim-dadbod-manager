@@ -7,9 +7,9 @@ schemas, tables and queries.
 
 vim-dadbod-ui lists every entry of `g:dbs` flat, so a server such as
 `sqlserver://sa@localhost:1433/master` is one connection and the other databases on
-that server are simply unreachable. This plugin marks the connections you name as
-**server nodes**, asks vim-dadbod's adapter for the databases behind them
-(`complete_database`) and splices the result into the drawer as child nodes, without
+that server are simply unreachable. This plugin recognises such a connection as a
+**server node** automatically: it asks vim-dadbod's adapter for the databases behind
+it (`complete_database`) and splices the result into the drawer as child nodes, without
 adding them to `g:dbs`, to the connections file or to `dbui.dbs_list`.
 
 ```
@@ -46,9 +46,11 @@ separate copy of vim-dadbod-ui must *not* be installed next to it, see
 
 The scheme of a server connection must implement `complete_database` in its
 vim-dadbod adapter. As of vim-dadbod 1.4 that is **clickhouse, mariadb, mongodb,
-mysql, postgresql, snowflake and sqlserver**. For any other scheme the server node
-is marked as failed and the reason is notified; plain connections (a SQLite file,
-an unreachable URL) are never marked as servers and behave exactly as before.
+mysql, postgresql, snowflake and sqlserver**. A connection using one of those schemes
+is detected as a server automatically when its URL names no database, or names the
+scheme's own default database (see [Server detection](#server-detection)); a connection
+pinned to a specific database, and any scheme that cannot list databases (a SQLite
+file, a Redis URL), stays a plain connection and behaves exactly as before.
 
 ## Install
 
@@ -59,15 +61,8 @@ an unreachable URL) are never marked as servers and behave exactly as before.
 	"sergioia-dev/vim-dadbod-manager",
 	dependencies = { "tpope/vim-dadbod" },
 	-- `opts` is passed to vim.g / setup(); see Configuration below.
-	init = function()
-		vim.g.dbui_multidb_masters = {
-			"Banco Production",
-			"Rama Production Dev",
-			"Rama Production QA",
-			"Banco Local SQLServer",
-			"Rama Local MySQL",
-		}
-	end,
+	-- Server nodes are detected from the connection URL; set
+	-- vim.g.dbui_multidb_masters = { "Banco Production" } to control them by hand.
 }
 ```
 
@@ -79,7 +74,8 @@ Plug 'tpope/vim-dadbod'
 Plug 'sergioia-dev/vim-dadbod-manager'
 call plug#end()
 
-let g:dbui_multidb_masters = ['Banco Production', 'Banco Local SQLServer']
+" Optional: name the server connections by hand instead of auto-detecting them.
+" let g:dbui_multidb_masters = ['Banco Production', 'Banco Local SQLServer']
 ```
 
 ### No plugin manager
@@ -135,7 +131,7 @@ let g:dbui_multidb_exclude = ['_test$', '_staging$']
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `g:dbui_multidb_masters` | `[]` | Names of the `g:dbs` connections to render as server nodes. A list, or a comma separated string (`'Banco, Rama Dev'`) — the string form is handy from a `ftplugin`. |
+| `g:dbui_multidb_masters` | `[]` | Names of the `g:dbs` connections to render as server nodes. Empty (the default) means **auto-detect**; a non-empty list is explicit mode and turns auto-detection off (see [Server detection](#server-detection)). A list, or a comma separated string (`'Banco, Rama Dev'`) — the string form is handy from a `ftplugin`. |
 | `g:dbui_multidb_exclude` | `[]` | Regexes; a discovered database whose name matches any of them is hidden (case insensitive: `'test$'`, `'^information_schema$'`). |
 | `g:dbui_multidb_sort` | `1` | Sort the discovered databases case-insensitively. `0` keeps the adapter order. |
 | `g:dbui_multidb_cache` | `1` | Discover once per server and reuse the result on later expansions. `0` re-queries on every expansion. |
@@ -149,10 +145,35 @@ let g:dbui_multidb_exclude = ['_test$', '_staging$']
 | `g:dbui_multidb_backup_runner` | `''` | A function name that receives the backup plan and replaces the spawn entirely. |
 | `g:dbui_multidb_backup_echo_command` | `0` | `1` shows the redacted command as a notification instead of running it. |
 
-`g:dbui_multidb_masters` is initialised to `[]` at load time (so `:DBManagerInfo`
-never sees an undefined variable); every other option is only read through its
-default. Nothing at all happens when `masters` is empty: the drawer, the connections
-and the keymaps stay exactly as vim-dadbod-ui ships them.
+### Server detection
+
+With `g:dbui_multidb_masters` empty (the default) a connection becomes a server when
+**both** hold:
+
+1. its resolved URL scheme advertises `complete_database` in vim-dadbod (clickhouse,
+   mariadb, mongodb, mysql, postgresql, snowflake, sqlserver), and
+2. its URL names no database, or names the scheme's own default database:
+
+| Scheme | Default database |
+| --- | --- |
+| `sqlserver` | `master` |
+| `postgresql` | `postgres` |
+| `clickhouse` | `default` |
+
+A scheme that implements `complete_database` but is not in the table (`mysql`,
+`mariadb`, `mongodb`, `snowflake`) is still detected, but only when its URL names no
+database at all: `mysql://root@localhost/` is a server while
+`mysql://root@localhost/app` is a plain connection. Database names are compared
+case-insensitively, so `sqlserver://sa@host/master` and `SQLServer://sa@host/MASTER`
+are equivalent.
+
+Set `g:dbui_multidb_masters` to a non-empty list to opt out: the list is then the
+whole truth, auto-detection is off, and a connection is a server only when its name
+is in the list. That is the escape hatch for a scheme or a naming convention the
+heuristic gets wrong.
+
+`g:dbui_multidb_masters` is initialised to `[]` at load time, so `:DBManagerInfo`
+never sees an undefined variable; every other option is only read through its default.
 
 The notification label is the one option that is not named `dbui_multidb_*`: it
 belongs to the shadowed upstream module rather than to this plugin.
@@ -281,6 +302,12 @@ points; the help file is vendored text and is kept byte-identical.
 - **Server nodes are containers.** They are never connected, never queried and never
   get a `db#connect()` call, so an expanded server cannot pop a password prompt for
   the *server* connection; only the database you expand connects.
+- **Servers are detected from the URL, not named.** With `g:dbui_multidb_masters`
+  empty (the default) a connection is a server when its adapter can list databases
+  and its URL names no database — or names the scheme's own default. Putting a name
+  in `g:dbui_multidb_masters` switches to explicit mode and turns detection off for
+  every connection. Detection never connects: it reads the URL, and
+  `dbui_multidb#discoverable()` never throws while the drawer is rendered.
 - **Children live only in `drawer.dbui.dbs`.** They are not appended to
   `dbui.dbs_list`, which is what `populate_dbs()` rebuilds from `g:dbs`, dotenv files
   and the connections file. Nothing this plugin discovers can therefore leak into

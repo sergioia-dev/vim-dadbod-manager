@@ -703,6 +703,84 @@ function! s:test_notification_title() abort
   runtime autoload/db_ui/notifications.vim
 endfunction
 
+" Server nodes are auto-detected when g:dbui_multidb_masters is empty: a
+" connection whose adapter can list databases and whose URL names no database
+" (or names the scheme's default) is a server, everything else stays plain.
+" Filling masters brings back explicit mode, where the list is the whole truth.
+function! s:test_auto_masters() abort
+  call s:reset()
+
+  " Unit tests: the URL alone decides, no drawer and no connection involved.
+  call s:eq(dbui_multidb#is_master({'name': 'S', 'url': 'sqlserver://sa@h/master'}), 1,
+        \ 'a sqlserver connection on the default database is auto-detected as a server')
+  call s:eq(dbui_multidb#is_master({'name': 'S', 'url': 'sqlserver://sa@h/dbdjpdevaccount'}), 0,
+        \ 'a sqlserver connection on a named database is not a server')
+  call s:eq(dbui_multidb#is_master({'name': 'S', 'url': 'postgresql://u@h/postgres'}), 1,
+        \ 'a postgresql connection on the default database is auto-detected as a server')
+  call s:eq(dbui_multidb#is_master({'name': 'S', 'url': 'postgresql://u@h/app'}), 0,
+        \ 'a postgresql connection on a named database is not a server')
+  call s:eq(dbui_multidb#is_master({'name': 'S', 'url': 'mysql://root@h/'}), 1,
+        \ 'a mysql connection without a database is auto-detected as a server')
+  call s:eq(dbui_multidb#is_master({'name': 'S', 'url': 'mysql://root@h/app'}), 0,
+        \ 'a mysql connection pinned to a database is not a server')
+  call s:eq(dbui_multidb#is_master({'name': 'S', 'url': 'sqlite:/var/lib/app.db'}), 0,
+        \ 'a scheme without database discovery is never a server')
+  call s:eq(dbui_multidb#discoverable({'name': 'S', 'url': ''}), 0,
+        \ 'a connection without a URL is not discoverable')
+  call s:eq(dbui_multidb#discoverable('not a dict'), 0,
+        \ 'a non dict argument is not discoverable')
+
+  " The same rule drives the drawer.
+  let g:dbs = {
+        \ 'Server': 'fakedb://u@h',
+        \ 'Single': 'fakedb://u@h/mydb',
+        \ 'Plain': 'sqlite:/var/lib/plain.db',
+        \ }
+  let g:dbui_multidb_test_dbs = ['alpha']
+
+  DBManager
+  let drawer = db_ui#drawer#get()
+  let lines = getline(1, '$')
+  let collapsed = g:db_ui_icons.collapsed.db
+  let dbs = drawer.dbui.dbs
+
+  call s:eq(dbui_multidb#is_master(dbs['Server_g:dbs']), 1,
+        \ 'a connection without a database is auto-detected as a server')
+  call s:eq(dbui_multidb#is_master(dbs['Single_g:dbs']), 0,
+        \ 'a connection pinned to one database is not a server')
+  call s:eq(dbui_multidb#is_master(dbs['Plain_g:dbs']), 0,
+        \ 'a connection that cannot be discovered is not a server')
+
+  call cursor(s:index_of(lines, 'Server$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  let server = s:index_of(lines, 'Server$')
+  call s:eq(lines[server + 1], '  " Databases (1)',
+        \ 'an auto-detected server expands like an explicit one')
+  call s:eq(lines[server + 2], '  ' . collapsed . ' alpha',
+        \ 'an auto-detected server lists its databases')
+  call s:ok(s:index_of(lines, 'Single$') > -1, 'a pinned connection is still listed')
+  call s:ok(s:index_of(lines, 'Plain$') > -1, 'a plain connection is still listed')
+
+  call s:eq(dbui_multidb#server_names(), ['Server'],
+        \ 'server name completion lists the auto-detected server')
+
+  let info = dbui_multidb#info()
+  call s:ok(s:index_of(info, 'masters:       (auto-detect)') > -1,
+        \ 'info reports auto-detection')
+  call s:ok(s:index_of(info, 'Server: 1 database(s): alpha') > -1,
+        \ 'info lists the auto-detected server')
+
+  " Explicit mode is an override: the list is the whole truth again.
+  call dbui_multidb#setup({'masters': ['Single']})
+  call s:eq(dbui_multidb#is_master(dbs['Server_g:dbs']), 0,
+        \ 'an explicit list disables auto-detection')
+  call s:eq(dbui_multidb#is_master(dbs['Single_g:dbs']), 1,
+        \ 'an explicit list still selects a named connection')
+  call s:eq(dbui_multidb#server_names(), ['Single'],
+        \ 'server name completion uses the explicit list')
+endfunction
+
 " must not escape into a refresh or into a render. Runs last because it
 " temporarily replaces an upstream function.
 function! s:test_notify() abort
@@ -729,6 +807,7 @@ let s:tests = [
       \ function('s:test_backup_plan'),
       \ function('s:test_dbmanager_commands'),
       \ function('s:test_notification_title'),
+      \ function('s:test_auto_masters'),
       \ function('s:test_notify'),
       \ ]
 

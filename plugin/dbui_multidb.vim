@@ -3,6 +3,9 @@ if exists('g:loaded_dbui_multidb')
 endif
 let g:loaded_dbui_multidb = 1
 
+" Empty (the default) means auto-detect: dbui_multidb#is_master() promotes a
+" connection whose adapter can list databases and whose URL names none. A
+" non-empty list is explicit mode and disables auto-detection.
 if !exists('g:dbui_multidb_masters')
   let g:dbui_multidb_masters = []
 endif
