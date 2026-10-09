@@ -50,6 +50,12 @@ function! s:reset() abort
   call db_ui#reset_state()
   silent! %bwipeout!
   let g:dbs = {}
+  " The nvim that runs this suite also loads this repository's own configuration
+  " (it is a package on 'packpath'), which points g:db_ui_save_location at the
+  " real cache directory; the drawer reads connections.json from there and would
+  " mix the user's saved connections into every test. Point it somewhere private.
+  let g:db_ui_save_location = tempname()
+  call mkdir(g:db_ui_save_location, 'p')
   for key in keys(dbui_multidb#config#defaults())
     execute 'unlet! g:dbui_multidb_' . key
   endfor
@@ -450,8 +456,9 @@ function! s:test_backup_section() abort
   call s:end_capture()
 endfunction
 
-" The command lines: every built-in scheme, the override forms, redaction, and
-" the safe-by-default behaviour of the server-side schemes.
+" The command lines: every built-in scheme, the override forms, redaction, the
+" schemes that have no local backup (sqlserver says so), and the
+" safe-by-default behaviour of the remaining server-side schemes.
 function! s:test_backup_plan() abort
   call s:reset()
 
@@ -490,11 +497,24 @@ function! s:test_backup_plan() abort
   let plan = dbui_multidb#backup#plan({'url': 'sqlite:/nonexistent/nowhere.db', 'name': 'app'})
   call s:eq(plan.ok, 0, 'sqlite without a file refuses to plan')
 
-  " sqlserver: server-side, so the directory is required
+  " sqlserver: no client side dump tool, so there is no backup to run here
+  call s:begin_capture()
   let ss = {'url': 'sqlserver://sa:s3cr3tpw@localhost:1433/app', 'name': 'app'}
   let plan = dbui_multidb#backup#plan(ss)
-  call s:eq(plan.ok, 0, 'sqlserver refuses to plan without a server directory')
-  call s:ok(plan.reason =~# 'backup_server_dirs', 'sqlserver explains the missing directory')
+  call s:eq(plan.ok, 0, 'sqlserver has no backup to plan on this machine')
+  call s:eq(plan.unsupported, 1, 'sqlserver is unsupported, not broken')
+  call s:ok(plan.reason =~# 'not available', 'the sqlserver reason says the backup is not available')
+  call s:ok(plan.reason =~# 'backup_server_dirs', 'the reason still names the server side opt-in')
+  call s:eq(len(s:notifications), 0, 'planning alone notifies nothing')
+  call s:eq(dbui_multidb#backup#start(ss), 0, 'starting an unavailable backup starts nothing')
+  call s:eq(len(s:notifications), 1, 'the unavailable backup reports exactly once')
+  call s:eq(s:notifications[0].kind, 'warning', 'an unavailable backup warns instead of erroring')
+  call s:ok(s:notifications[0].message =~# 'not available for "sqlserver"', 'the message says the backup is not available')
+  call s:eq(len(g:dbui_multidb_test_backup_plans), 0, 'an unavailable backup never reaches the runner')
+  call s:end_capture()
+
+  " The server side spelling is the opt-in: with a directory on the server
+  " named, the BACKUP DATABASE command is planned as before.
   let g:dbui_multidb_backup_server_dirs = {'sqlserver': '/var/opt/mssql/backup'}
   let plan = dbui_multidb#backup#plan(ss)
   call s:eq(plan.ok, 1, 'sqlserver plans once the directory is set')

@@ -141,7 +141,7 @@ let g:dbui_multidb_exclude = ['_test$', '_staging$']
 | `g:dbui_multidb_backup_dir` | `'~/dbui-backups'` | Where client-side backups are written. `~` and `$VARS` are expanded. |
 | `g:dbui_multidb_backup_commands` | `{}` | Override a backup command by scheme (see [Backups](#backups)). |
 | `g:dbui_multidb_backup_options` | `{}` | Extra flags inserted into a built-in command, by scheme. |
-| `g:dbui_multidb_backup_server_dirs` | `{}` | Required destination for the server-side schemes (`sqlserver`, `clickhouse`, `oracle`); see [Backups](#backups). |
+| `g:dbui_multidb_backup_server_dirs` | `{}` | Destination **on the server** for the server-side schemes (`sqlserver`, `clickhouse`, `oracle`). Without it those schemes have no backup to run — sqlserver says so; see [Backups](#backups). |
 | `g:dbui_multidb_backup_runner` | `''` | A function name that receives the backup plan and replaces the spawn entirely. |
 | `g:dbui_multidb_backup_echo_command` | `0` | `1` shows the redacted command as a notification instead of running it. |
 
@@ -211,7 +211,7 @@ The command for each scheme, and where the dump lands:
 | `mongodb` | `mongodump --archive --gzip` | local |
 | `duckdb` | `duckdb … "EXPORT DATABASE … (FORMAT PARQUET)"` | local (a directory) |
 | `redis` | `redis-cli --rdb` | local |
-| `sqlserver` | `sqlcmd -Q "BACKUP DATABASE …"` | **server** (`…_server_dirs.sqlserver`) |
+| `sqlserver` | **not available** — see below; `sqlcmd -Q "BACKUP DATABASE …"` only with `…_server_dirs.sqlserver` | server (or nowhere) |
 | `clickhouse` | `clickhouse-client -q "BACKUP DATABASE … TO Disk(…)"` | **server** (`…_server_dirs.clickhouse` = disk name) |
 | `oracle` | `expdp` | **server** (`…_server_dirs.oracle` = Oracle `DIRECTORY` object) |
 
@@ -229,6 +229,22 @@ let g:dbui_multidb_backup_server_dirs = {
       \ 'oracle': 'DATA_PUMP_DIR',      " an Oracle DIRECTORY object, not a path
       \ }
 ```
+
+**SQL Server has no backup of its own: pressing Backup says so.** SQL Server keeps its
+`.bak` files on its own disk — the only command that writes one is
+`BACKUP DATABASE … TO DISK`, which the *server* runs — and unlike postgresql and
+mysql it has no client side dump tool, so there is nothing this plugin can run on
+your machine. Rather than point at a server directory nobody asked for, the Backup
+action on a SQL Server connection reports it:
+
+> vim-dadbod-manager: Backups are not available for "sqlserver": SQL Server writes
+> .bak files on the server host and has no client side dump tool. Set
+> g:dbui_multidb_backup_server_dirs.sqlserver to a directory on the server, or
+> g:dbui_multidb_backup_commands.sqlserver for a client side export.
+
+That notification is a warning, not a failure: nothing was attempted. The two keys
+it names are the ways out — a directory on the server (the `sqlcmd` spelling above),
+or a client side command of your own in `g:dbui_multidb_backup_commands.sqlserver`.
 
 ### Overriding the command
 

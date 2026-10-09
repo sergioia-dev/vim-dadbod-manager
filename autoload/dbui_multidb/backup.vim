@@ -62,7 +62,9 @@ endfunction
 " Build the plan for a database entry. Returns either
 " {ok: 1, ...} (the full plan, documented on dbui_multidb#backup#plan()) or
 " {ok: 0, reason: "..."} when the connection does not carry what the command
-" needs. Never throws and never starts anything.
+" needs, or when the scheme has no backup to run here at all, which adds
+" {unsupported: 1} so that the caller warns instead of reporting a failure.
+" Never throws and never starts anything.
 function! dbui_multidb#backup#plan(db) abort
   let cfg = dbui_multidb#config#get()
   let ctx = s:context(a:db, cfg)
@@ -82,7 +84,14 @@ endfunction
 function! dbui_multidb#backup#start(db) abort
   let plan = dbui_multidb#backup#plan(a:db)
   if !get(plan, 'ok', 0)
-    call dbui_multidb#notify#error('vim-dadbod-manager: ' . get(plan, 'reason', 'cannot build a backup plan.'))
+    let message = 'vim-dadbod-manager: ' . get(plan, 'reason', 'cannot build a backup plan.')
+    " A scheme that has no backup on this machine is not a failure: the
+    " message says so and nothing was attempted.
+    if get(plan, 'unsupported', 0)
+      call dbui_multidb#notify#warning(message)
+    else
+      call dbui_multidb#notify#error(message)
+    endif
     return 0
   endif
 
@@ -266,9 +275,13 @@ function! s:sqlserver_plan(ctx) abort
   endif
   let base = s:server_dir(a:ctx)
   if empty(base)
-    return {'ok': 0, 'reason': printf(
-          \ 'Backups for "%s" are written by the SQL Server host; set g:dbui_multidb_backup_server_dirs.%s to a directory on it.',
-          \ a:ctx.raw, a:ctx.raw)}
+    " SQL Server keeps its backups on its own disk: the only command that can
+    " write one is BACKUP DATABASE, which the server itself runs, and there is
+    " no client side dump tool for it. Say that instead of pretending a backup
+    " ran here; the two keys named in the message are the ways out.
+    return {'ok': 0, 'unsupported': 1, 'reason': printf(
+          \ 'Backups are not available for "%s": SQL Server writes .bak files on the server host and has no client side dump tool. Set g:dbui_multidb_backup_server_dirs.%s to a directory on the server, or g:dbui_multidb_backup_commands.%s for a client side export.',
+          \ a:ctx.raw, a:ctx.raw, a:ctx.raw)}
   endif
   let ext = '.bak'
   let target = s:server_target(base, a:ctx.name, ext)
