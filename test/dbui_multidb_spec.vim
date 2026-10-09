@@ -38,6 +38,13 @@ function! s:index_of(lines, pattern) abort
   return -1
 endfunction
 
+" The test runner for backups: it records a plan instead of spawning anything.
+" It is a global function because g:dbui_multidb_backup_runner is read as a
+" function name (a Funcref cannot live in a lowercase-named global, E704).
+function! DbuiMultidbTestRecordBackup(plan) abort
+  call add(g:dbui_multidb_test_backup_plans, a:plan)
+endfunction
+
 " Back to a pristine state: no drawer, no connections, no configuration.
 function! s:reset() abort
   call db_ui#reset_state()
@@ -49,12 +56,18 @@ function! s:reset() abort
   let g:dbui_multidb_test_dbs = []
   let g:dbui_multidb_test_tables = []
   let g:dbui_multidb_test_calls = []
+  " Backups are never spawned: the directory is a tempdir and the runner records
+  " every plan instead of running it.
+  let g:dbui_multidb_backup_dir = tempname()
+  let g:dbui_multidb_backup_runner = 'DbuiMultidbTestRecordBackup'
+  let g:dbui_multidb_test_backup_plans = []
+  call dbui_multidb#backup#reset()
 endfunction
 " Notifications are collected instead of displayed so a test can assert on what
 " the user is told. This replaces upstream notifiers; s:end_capture() puts them
 " back (the suite runs s:test_notify last for the same reason).
 let s:notifications = []
-function! s:begin_capture() abort
+function! s:begin_capture(...) abort
   let s:notifications = []
   function! db_ui#notifications#warning(msg, ...) abort
     call add(s:notifications, {'kind': 'warning', 'message': a:msg})
@@ -62,6 +75,14 @@ function! s:begin_capture() abort
   function! db_ui#notifications#error(msg, ...) abort
     call add(s:notifications, {'kind': 'error', 'message': a:msg})
   endfunction
+  " info notifications are off by default (g:db_ui_disable_info_notifications
+  " is set in minimal_init), so capturing them is opt-in: the backup tests need
+  " the "Backup started/finished" messages.
+  if get(a:, 1, 0)
+    function! db_ui#notifications#info(msg, ...) abort
+      call add(s:notifications, {'kind': 'info', 'message': a:msg})
+    endfunction
+  endif
 endfunction
 
 function! s:end_capture() abort
@@ -205,10 +226,13 @@ function! s:test_drawer() abort
   let expanded = g:db_ui_icons.expanded.db
 
   let lines = getline(1, '$')
-  call s:eq(len(lines), 2, 'a collapsed tree has one line per connection')
+  call s:eq(len(lines), 3, 'a collapsed tree has one line per connection plus each database section')
   let server = s:index_of(lines, 'Server$')
   call s:eq(lines[server], collapsed . ' Server', 'a server node is drawn like a connection')
-  call s:ok(s:index_of(lines, 'Plain$') > -1, 'connections that are not servers are untouched')
+  let plain = s:index_of(lines, 'Plain$')
+  call s:ok(plain > -1, 'connections that are not servers are drawn')
+  call s:eq(lines[plain + 1], '  ' . g:db_ui_icons.collapsed.tables . ' Administrative',
+        \ 'a plain connection shows its collapsed Administrative section')
 
   " Expand the server node exactly like <Plug>(DBUI_SelectLine) does.
   call cursor(server + 1, 1)
@@ -218,7 +242,9 @@ function! s:test_drawer() abort
   call s:eq(lines[server], expanded . ' Server', 'an expanded server node shows the expanded icon')
   call s:eq(lines[server + 1], '  " Databases (2)', 'an expanded server node announces its databases')
   call s:eq(lines[server + 2], '  ' . collapsed . ' alpha', 'databases are drawn one level down, sorted')
-  call s:eq(lines[server + 3], '  ' . collapsed . ' beta', 'every discovered database is drawn')
+  call s:eq(lines[server + 3], '    ' . g:db_ui_icons.collapsed.tables . ' Administrative',
+        \ 'a collapsed database still shows its Administrative section')
+  call s:eq(lines[server + 4], '  ' . collapsed . ' beta', 'every discovered database is drawn')
 
   let dbs = drawer.dbui.dbs
   call s:ok(has_key(dbs, 'Server_g:dbs::alpha'), 'a database is keyed by its server and name')
@@ -248,6 +274,8 @@ function! s:test_drawer() abort
   call s:ok(s:index_of(lines, 'Saved queries (0)$') > -1, 'a database renders its saved queries')
   call s:ok(s:index_of(lines, 'Tables (2)$') > -1, 'a database renders its tables')
   call s:eq(drawer.dbui.dbs['Server_g:dbs::alpha'].expanded, 1, 'a database keeps its expansion state')
+  call s:eq(lines[server + 6], '    ' . g:db_ui_icons.collapsed.tables . ' Administrative',
+        \ 'a database appends its Administrative section after its tables')
 
   call cursor(s:index_of(lines, 'alpha$') + 1, 1)
   call drawer.toggle_line('')
@@ -381,6 +409,199 @@ function! s:test_missing_client() abort
   call s:end_capture()
 endfunction
 
+" The Administrative section and its Backup leaf are part of the drawer, wired
+" to the backup planner through the call_method dispatch.
+function! s:test_backup_section() abort
+  call s:reset()
+  let g:dbs = {'Server': 'fakedb://u@h/master', 'Plain': 'sqlite:/var/lib/plain.db'}
+  let g:dbui_multidb_test_dbs = ['alpha']
+  let g:dbui_multidb_test_tables = ['orders']
+  call dbui_multidb#setup({'masters': ['Server']})
+
+  call s:begin_capture()
+  DBManager
+  let drawer = db_ui#drawer#get()
+
+  " Every database node carries a collapsed Administrative section.
+  let lines = getline(1, '$')
+  let plain = s:index_of(lines, 'Plain$')
+  call s:eq(lines[plain + 1], '  ' . g:db_ui_icons.collapsed.tables . ' Administrative',
+        \ 'a plain connection shows its collapsed Administrative section')
+
+  " Expand Server, then alpha, then alpha's Administrative section.
+  call cursor(s:index_of(lines, 'Server$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call cursor(s:index_of(lines, 'alpha$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  let admin = s:index_of(lines, '^    \S* Administrative$')
+  call s:ok(admin > -1, 'an expanded database appends its Administrative section')
+  call cursor(admin + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  let backup = s:index_of(lines, '^      Backup$')
+  call s:ok(backup > -1, 'expanding Administrative reveals the Backup action')
+  call s:eq(lines[backup], '      Backup', 'the Backup action nests under Administrative')
+
+  " <CR> on Backup reaches the planner: fakedb has no backup command, so the
+  " user gets an explanation and the runner is never handed a plan.
+  call cursor(backup + 1, 1)
+  call drawer.toggle_line('')
+  call s:eq(len(g:dbui_multidb_test_backup_plans), 0, 'a failed plan never reaches the runner')
+  call s:eq(len(s:notifications), 1, 'the failed plan reports exactly once')
+  call s:eq(s:notifications[0].kind, 'error', 'a failed plan is an error')
+  call s:ok(s:notifications[0].message =~# 'fakedb', 'the error names the scheme')
+
+  call s:end_capture()
+endfunction
+
+" The command lines: every built-in scheme, the override forms, redaction, and
+" the safe-by-default behaviour of the server-side schemes.
+function! s:test_backup_plan() abort
+  call s:reset()
+
+  " postgresql
+  let pg = {'url': 'postgresql://user:s3cr3tpw@db.example.com:5432/app', 'name': 'app'}
+  let plan = dbui_multidb#backup#plan(pg)
+  call s:eq(plan.ok, 1, 'postgresql plans successfully')
+  call s:eq(plan.scheme, 'postgresql', 'postgresql is canonical')
+  call s:eq(plan.argv[0], 'pg_dump', 'postgresql uses pg_dump')
+  call s:ok(index(plan.argv, '--file') >= 0, 'postgresql writes a file')
+  call s:ok(dbui_multidb#backup#display(plan) !~# 's3cr3tpw', 'the display redacts the password')
+
+  " mysql: the database name stays last
+  let plan = dbui_multidb#backup#plan({'url': 'mysql://root:s3cr3tpw@127.0.0.1:3306/app', 'name': 'app'})
+  call s:eq(plan.ok, 1, 'mysql plans successfully')
+  call s:ok(plan.argv[0] =~# 'dump$', 'mysql uses a *dump binary')
+  call s:eq(plan.argv[-1], 'app', 'mysql keeps the database name last')
+  call s:ok(index(plan.argv, '--result-file=' . plan.target) >= 0, 'mysql writes through --result-file')
+  call s:ok(dbui_multidb#backup#display(plan) !~# 's3cr3tpw', 'mysql display redacts the password')
+
+  " mysql without a database
+  let plan = dbui_multidb#backup#plan({'url': 'mysql://root@127.0.0.1:3306/', 'name': 'app'})
+  call s:eq(plan.ok, 0, 'mysql without a database refuses to plan')
+  call s:ok(plan.reason =~# 'database', 'the reason mentions the missing database')
+
+  " sqlite (a real readable file, created on the fly)
+  let dir = tempname()
+  call mkdir(dir, 'p')
+  let f = dir . '/app.db'
+  call writefile([], f)
+  let plan = dbui_multidb#backup#plan({'url': 'sqlite:' . f, 'name': 'app'})
+  call s:eq(plan.ok, 1, 'sqlite plans successfully')
+  call s:ok(join(plan.argv, ' ') =~# 'VACUUM INTO', 'sqlite uses VACUUM INTO')
+
+  " sqlite without a readable file
+  let plan = dbui_multidb#backup#plan({'url': 'sqlite:/nonexistent/nowhere.db', 'name': 'app'})
+  call s:eq(plan.ok, 0, 'sqlite without a file refuses to plan')
+
+  " sqlserver: server-side, so the directory is required
+  let ss = {'url': 'sqlserver://sa:s3cr3tpw@localhost:1433/app', 'name': 'app'}
+  let plan = dbui_multidb#backup#plan(ss)
+  call s:eq(plan.ok, 0, 'sqlserver refuses to plan without a server directory')
+  call s:ok(plan.reason =~# 'backup_server_dirs', 'sqlserver explains the missing directory')
+  let g:dbui_multidb_backup_server_dirs = {'sqlserver': '/var/opt/mssql/backup'}
+  let plan = dbui_multidb#backup#plan(ss)
+  call s:eq(plan.ok, 1, 'sqlserver plans once the directory is set')
+  call s:ok(join(plan.argv, ' ') =~# 'BACKUP DATABASE \[app\]', 'sqlserver backs up the right database')
+  call s:ok(dbui_multidb#backup#display(plan) !~# 's3cr3tpw', 'sqlserver display redacts the password')
+
+  " mongodb
+  let plan = dbui_multidb#backup#plan({'url': 'mongodb://user:s3cr3tpw@db.example.com/app', 'name': 'app'})
+  call s:eq(plan.ok, 1, 'mongodb plans successfully')
+  call s:eq(plan.argv[0], 'mongodump', 'mongodb uses mongodump')
+  call s:ok(index(plan.argv, '--gzip') >= 0, 'mongodb gzips the archive')
+
+  " duckdb (a real readable file)
+  let dir = tempname()
+  call mkdir(dir, 'p')
+  let f = dir . '/app.duckdb'
+  call writefile([], f)
+  let plan = dbui_multidb#backup#plan({'url': 'duckdb:' . f, 'name': 'app'})
+  call s:eq(plan.ok, 1, 'duckdb plans successfully')
+  call s:ok(join(plan.argv, ' ') =~# 'EXPORT DATABASE', 'duckdb uses EXPORT DATABASE')
+
+  " clickhouse: server-side, so the disk is required
+  let ch = {'url': 'clickhouse://user:s3cr3tpw@db.example.com/app', 'name': 'app'}
+  let plan = dbui_multidb#backup#plan(ch)
+  call s:eq(plan.ok, 0, 'clickhouse refuses to plan without a disk')
+  let g:dbui_multidb_backup_server_dirs = {'clickhouse': 'backups'}
+  let plan = dbui_multidb#backup#plan(ch)
+  call s:eq(plan.ok, 1, 'clickhouse plans once the disk is set')
+  call s:ok(join(plan.argv, ' ') =~# 'BACKUP DATABASE `app`', 'clickhouse backs up the right database')
+
+  " oracle: server-side, so the DIRECTORY object is required
+  let oa = {'url': 'oracle://system:s3cr3tpw@db.example.com:1521/app', 'name': 'app'}
+  let plan = dbui_multidb#backup#plan(oa)
+  call s:eq(plan.ok, 0, 'oracle refuses to plan without a DIRECTORY')
+  let g:dbui_multidb_backup_server_dirs = {'oracle': 'DATA_PUMP_DIR'}
+  let plan = dbui_multidb#backup#plan(oa)
+  call s:eq(plan.ok, 1, 'oracle plans once the DIRECTORY is set')
+  call s:eq(plan.argv[0], 'expdp', 'oracle uses expdp')
+  call s:ok(index(plan.argv, 'FULL=Y') >= 0, 'oracle exports the full database')
+
+  " redis
+  let plan = dbui_multidb#backup#plan({'url': 'redis://user:s3cr3tpw@db.example.com:6379/0', 'name': 'app'})
+  call s:eq(plan.ok, 1, 'redis plans successfully')
+  call s:eq(plan.argv[0], 'redis-cli', 'redis uses redis-cli')
+  call s:ok(index(plan.argv, '--rdb') >= 0, 'redis fetches an RDB dump')
+
+  " redaction: every password-bearing form is masked
+  let redacted = dbui_multidb#backup#redact([
+        \ '--password=hunter2', '-psecret', '--pass', 'hunter2', '-a', 'hunter2',
+        \ 'env', 'SQLCMDPASSWORD=abc', 'mongodb://u:hunter2@h/db?password=xyz'])
+  let joined = join(redacted, ' ')
+  call s:ok(joined !~# 'hunter2', 'redaction masks --password=, -p, --pass, -a and URL passwords')
+  call s:ok(joined !~# 'abc', 'redaction masks SQLCMDPASSWORD=')
+  call s:ok(joined !~# 'xyz', 'redaction masks a password= query parameter')
+
+  " a scheme the plugin does not know how to back up
+  let plan = dbui_multidb#backup#plan({'url': 'bigquery://proj', 'name': 'proj'})
+  call s:eq(plan.ok, 0, 'an unsupported scheme refuses to plan')
+  call s:ok(plan.reason =~# 'bigquery', 'the unsupported scheme is named')
+
+  " string override: replace only the program
+  let g:dbui_multidb_backup_commands = {'postgresql': 'my-pg-dump'}
+  let plan = dbui_multidb#backup#plan(pg)
+  call s:eq(plan.argv[0], 'my-pg-dump', 'a string override replaces the program')
+
+  " list override: a full argv template, stdout redirected when no {output}
+  let g:dbui_multidb_backup_commands = {'postgresql': ['echo', 'hello {name}']}
+  let plan = dbui_multidb#backup#plan(pg)
+  call s:eq(plan.kind, 'custom', 'a list override yields a custom command')
+  call s:eq(plan.writes_target, 0, 'a template without {output} does not write the target')
+  call s:eq(plan.stdout_target, 1, 'a template without {output} redirects stdout')
+  call s:eq(plan.argv[0], 'echo', 'the template argv is preserved')
+
+  " a template with {output} writes the target itself
+  let g:dbui_multidb_backup_commands = {'postgresql': ['cp', '{url}', '{output}']}
+  let plan = dbui_multidb#backup#plan(pg)
+  call s:eq(plan.writes_target, 1, 'a template with {output} writes the target')
+
+  " target collisions: a backup never overwrites an earlier file
+  let g:dbui_multidb_backup_commands = {}
+  let dir = tempname()
+  call mkdir(dir, 'p')
+  let g:dbui_multidb_backup_dir = dir
+  let first = dbui_multidb#backup#plan(pg)
+  call writefile(['x'], first.target)
+  let second = dbui_multidb#backup#plan(pg)
+  call s:ok(second.target !=# first.target, 'a second backup does not overwrite the first')
+  call s:ok(!filereadable(second.target), 'the second backup picks a free path')
+
+  " backup_echo_command: show, do not run, and do not leak
+  unlet g:dbui_multidb_backup_runner
+  let g:dbui_multidb_backup_echo_command = 1
+  call s:begin_capture(1)
+  call dbui_multidb#backup#start(pg)
+  call s:eq(len(g:dbui_multidb_test_backup_plans), 0, 'echo mode never reaches the runner')
+  call s:ok(len(s:notifications) == 1 && s:notifications[0].kind ==# 'info', 'echo mode informs instead of spawning')
+  call s:ok(s:notifications[0].message =~# 'Backup would run', 'echo mode says what would run')
+  call s:ok(s:notifications[0].message !~# 's3cr3tpw', 'echo mode does not leak the password')
+  call s:end_capture()
+endfunction
+
 " Back to a single window with the drawer closed: the layout probes below read
 " winlayout(), which only means something when the suite left no windows behind.
 function! s:only_window() abort
@@ -510,6 +731,8 @@ let s:tests = [
       \ function('s:test_drawer'),
       \ function('s:test_discovery_error'),
       \ function('s:test_missing_client'),
+      \ function('s:test_backup_section'),
+      \ function('s:test_backup_plan'),
       \ function('s:test_dbmanager_commands'),
       \ function('s:test_notification_title'),
       \ function('s:test_notify'),

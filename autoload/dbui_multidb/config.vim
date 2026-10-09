@@ -11,6 +11,13 @@ function! dbui_multidb#config#defaults() abort
         \ 'cache': 1,
         \ 'notify': 1,
         \ 'server_icons': {},
+        \ 'backup_section': 1,
+        \ 'backup_dir': '~/dbui-backups',
+        \ 'backup_commands': {},
+        \ 'backup_options': {},
+        \ 'backup_server_dirs': {},
+        \ 'backup_runner': '',
+        \ 'backup_echo_command': 0,
         \ }
 endfunction
 

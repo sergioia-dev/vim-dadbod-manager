@@ -141,6 +141,13 @@ let g:dbui_multidb_exclude = ['_test$', '_staging$']
 | `g:dbui_multidb_cache` | `1` | Discover once per server and reuse the result on later expansions. `0` re-queries on every expansion. |
 | `g:dbui_multidb_notify` | `1` | Show an info notification while a discovery is running. Failures are always notified: they are the reason the server node came back empty. |
 | `g:dbui_multidb_server_icons` | `{}` | Override the toggle icon of server nodes: `{'server_expanded': '▼', 'server_collapsed': '▶'}`. Unset keys fall back to `g:db_ui_icons`. |
+| `g:dbui_multidb_backup_section` | `1` | Draw the per-database **Administrative** section (which holds the **Backup** action). `0` hides it. |
+| `g:dbui_multidb_backup_dir` | `'~/dbui-backups'` | Where client-side backups are written. `~` and `$VARS` are expanded. |
+| `g:dbui_multidb_backup_commands` | `{}` | Override a backup command by scheme (see [Backups](#backups)). |
+| `g:dbui_multidb_backup_options` | `{}` | Extra flags inserted into a built-in command, by scheme. |
+| `g:dbui_multidb_backup_server_dirs` | `{}` | Required destination for the server-side schemes (`sqlserver`, `clickhouse`, `oracle`); see [Backups](#backups). |
+| `g:dbui_multidb_backup_runner` | `''` | A function name that receives the backup plan and replaces the spawn entirely. |
+| `g:dbui_multidb_backup_echo_command` | `0` | `1` shows the redacted command as a notification instead of running it. |
 
 `g:dbui_multidb_masters` is initialised to `[]` at load time (so `:DBManagerInfo`
 never sees an undefined variable); every other option is only read through its
@@ -153,7 +160,77 @@ belongs to the shadowed upstream module rather than to this plugin.
 loads, so set it in your configuration; changed later, it needs
 `:runtime autoload/db_ui/notifications.vim` to take effect.
 
+## Backups
+
+Every database node ends with an **Administrative** section; expand it and press
+`<CR>` on **Backup** to start a backup of that database. A backup is a detached job:
+the editor is never blocked, and a notification reports when it starts and again when
+it finishes (or fails, with the log to read). Passwords never reach a notification:
+the command is built from the connection URL, which carries the credentials, and the
+displayed command is redacted.
+
+```
+▸ app
+    ▸ Saved queries (0)
+    ▸ Tables (128)
+    ▸ Administrative
+        Backup
+```
+
+The Administrative section reuses the `tables` toggle icon; `g:db_ui_icons.backup`
+gives the Backup leaf an icon (unset, the leaf is just its label).
+
+The command for each scheme, and where the dump lands:
+
+| Scheme | Command | Destination |
+| --- | --- | --- |
+| `postgresql` | `pg_dump --format=custom` | local (`g:dbui_multidb_backup_dir`) |
+| `mysql` / `mariadb` | `mysqldump` / `mariadb-dump --result-file` | local |
+| `sqlite` | `sqlite3 … "VACUUM INTO …"` (SQLite 3.27+) | local |
+| `mongodb` | `mongodump --archive --gzip` | local |
+| `duckdb` | `duckdb … "EXPORT DATABASE … (FORMAT PARQUET)"` | local (a directory) |
+| `redis` | `redis-cli --rdb` | local |
+| `sqlserver` | `sqlcmd -Q "BACKUP DATABASE …"` | **server** (`…_server_dirs.sqlserver`) |
+| `clickhouse` | `clickhouse-client -q "BACKUP DATABASE … TO Disk(…)"` | **server** (`…_server_dirs.clickhouse` = disk name) |
+| `oracle` | `expdp` | **server** (`…_server_dirs.oracle` = Oracle `DIRECTORY` object) |
+
+Files are named `<database>-<timestamp>.<ext>` under the destination; an existing file
+is never overwritten (a `-1`, `-2`, … suffix is appended instead).
+
+**Server-side schemes are safe by default.** `sqlcmd`, `clickhouse-client` and `expdp`
+write on the database server, not on your machine, so they refuse to plan until you
+tell them where to write via `g:dbui_multidb_backup_server_dirs`:
+
+```vim
+let g:dbui_multidb_backup_server_dirs = {
+      \ 'sqlserver': '/var/opt/mssql/backup',
+      \ 'clickhouse': 'backups',        " a ClickHouse disk name, not a path
+      \ 'oracle': 'DATA_PUMP_DIR',      " an Oracle DIRECTORY object, not a path
+      \ }
+```
+
+### Overriding the command
+
+- `g:dbui_multidb_backup_commands` replaces a command, keyed by scheme (the raw
+  spelling `mariadb` or the canonical `mysql` both work). A **string** replaces only
+  the program: `{'postgresql': 'pg_dump16'}`. A **list** is a complete argv template
+  with placeholders `{url} {db} {host} {port} {user} {password} {output} {file}
+  {dir} {name} {timestamp} {ext} {log} {scheme} {disk} {directory}`; if it mentions
+  `{output}`/`{file}` the command is assumed to create the file, otherwise its stdout
+  is redirected there.
+- `g:dbui_multidb_backup_options` inserts extra flags into a built-in command, keyed
+  by scheme: `{'postgresql': '--no-owner --verbose'}` (a string) or a list.
+- `g:dbui_multidb_backup_runner` (a function name) receives the plan dict and
+  replaces the spawn entirely — the command is never run. Use it to route backups
+  through your own machinery.
+- `g:dbui_multidb_backup_echo_command` (`1`) shows the redacted command instead of
+  running it.
+
+Backups are POSIX-only: they run through `sh -c`, so the database client must be in
+the `$PATH` of the shell Neovim was started from.
+
 ## Commands
+
 
 The drawer's own entry points are only available under this plugin's name: the
 `:DBUI*` spellings are removed while this plugin loads, because the drawer is

@@ -60,6 +60,7 @@ function! dbui_multidb#patch#apply() abort
     let drawer['dbui_multidb_orig_' . method] = drawer[method]
     let drawer[method] = function('dbui_multidb#patch#' . method, drawer)
   endfor
+  let drawer.dbui_multidb_backup = function('dbui_multidb#administrative#backup', drawer)
   let drawer.dbui_multidb_patched = 1
 
   return 1
@@ -88,7 +89,9 @@ endfunction
 " added, so the icon is drawn in the same pass that found the failure.
 function! dbui_multidb#patch#add_db(db) abort dict
   if !dbui_multidb#is_master(a:db)
-    return self.dbui_multidb_orig_add_db(a:db)
+    let result = self.dbui_multidb_orig_add_db(a:db)
+    call dbui_multidb#administrative#append(self, a:db)
+    return result
   endif
 
   let state = a:db.expanded ? dbui_multidb#discover#children(self, a:db) : {}
@@ -123,7 +126,7 @@ function! dbui_multidb#patch#add_db(db) abort dict
     " Children are rendered by upstream code, then indented one level so the
     " tree reads server -> database -> schema -> table.
     let start = len(self.content)
-    call self.dbui_multidb_orig_add_db(self.dbui.dbs[key_name])
+    call self.add_db(self.dbui.dbs[key_name])
     for i in range(start, len(self.content) - 1)
       let self.content[i].level += 1
     endfor
