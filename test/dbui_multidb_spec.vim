@@ -189,20 +189,54 @@ function! s:test_discovery() abort
   call dbui_multidb#setup({'masters': ['Server']})
 
   let g:dbui_multidb_test_dbs = ['zeta', 'Alpha', 'alpha', '', 'beta']
-  let result = dbui_multidb#discover#names('fakedb://u@h/master', 'Server')
+  let result = dbui_multidb#discover#names('fakedb://u@h', 'Server')
   call s:eq(result.error, '', 'discovery succeeds')
   call s:eq(result.names, ['Alpha', 'beta', 'zeta'],
         \ 'discovery drops empties, dedupes case insensitively and sorts')
   call s:eq(len(g:dbui_multidb_test_calls), 1, 'discovery asks the adapter exactly once')
 
   call dbui_multidb#setup({'sort': 0})
-  call s:eq(dbui_multidb#discover#names('fakedb://u@h/master').names, ['zeta', 'Alpha', 'beta'],
+  call s:eq(dbui_multidb#discover#names('fakedb://u@h').names, ['zeta', 'Alpha', 'beta'],
         \ 'sorting can be turned off')
 
   call dbui_multidb#setup({'exclude': ['^mysql$', 'schema$']})
   let g:dbui_multidb_test_dbs = ['mysql', 'information_schema', 'app', 'public']
-  call s:eq(dbui_multidb#discover#names('fakedb://u@h/master').names, ['app', 'public'],
+  call s:eq(dbui_multidb#discover#names('fakedb://u@h').names, ['app', 'public'],
         \ 'exclude patterns are regular expressions')
+
+  " Filtering every returned database away is not a connection failure: the
+  " adapter did answer, the list is just empty after the user's own filters.
+  call dbui_multidb#setup({'exclude': ['^mysql$']})
+  let g:dbui_multidb_test_dbs = ['mysql']
+  let result = dbui_multidb#discover#names('fakedb://u@h')
+  call s:eq(result.names, [], 'every returned database can be excluded')
+  call s:eq(result.error, '', 'an excluded database is not a connection failure')
+
+  " A client that exits without a word did not connect, so the empty answer is
+  " an error and not an empty database list.
+  let g:dbui_multidb_test_dbs = []
+  let result = dbui_multidb#discover#names('fakedb://u@h')
+  call s:eq(result.names, [], 'an empty discovery returns no names')
+  call s:ok(result.error =~? 'no databases\|could not connect',
+        \ 'an empty discovery is reported as a connection failure')
+
+  " Some clients print a header or a separator in the middle of the names.
+  call dbui_multidb#setup({'masters': ['Server'], 'exclude': [], 'sort': 1})
+  let g:dbui_multidb_test_dbs = ['name', 'NAME', 'Database', '----', 'alpha', '']
+  call s:eq(dbui_multidb#discover#names('fakedb://u@h').names, ['alpha'],
+        \ 'headers, separators and blanks are dropped from the raw answer')
+
+  " The database named in the connection URL is always part of the answer.
+  let g:dbui_multidb_test_dbs = ['beta', 'alpha']
+  call s:eq(dbui_multidb#discover#names('fakedb://u@h/master').names,
+        \ ['alpha', 'beta', 'master'],
+        \ 'the database named in the connection URL is discovered even when the adapter omits it')
+  let g:dbui_multidb_test_dbs = ['master', 'alpha']
+  call s:eq(dbui_multidb#discover#names('fakedb://u@h/master').names, ['alpha', 'master'],
+        \ 'a database the adapter already reported is not duplicated')
+  let g:dbui_multidb_test_dbs = ['alpha']
+  call s:eq(dbui_multidb#discover#names('fakedb://u@h').names, ['alpha'],
+        \ 'a connection that names no database adds nothing')
 
   let result = dbui_multidb#discover#names('sqlite:/var/lib/app.db')
   call s:eq(result.names, [], 'an unsupported scheme returns no names')
@@ -217,7 +251,7 @@ endfunction
 
 function! s:test_drawer() abort
   call s:reset()
-  let g:dbs = {'Server': 'fakedb://u@h/master', 'Plain': 'sqlite:/var/lib/plain.db'}
+  let g:dbs = {'Server': 'fakedb://u@h', 'Plain': 'sqlite:/var/lib/plain.db'}
   let g:dbui_multidb_test_dbs = ['beta', 'alpha', '']
   let g:dbui_multidb_test_tables = ['orders', 'users']
   call dbui_multidb#setup({'masters': ['Server']})
@@ -331,7 +365,7 @@ endfunction
 " working.
 function! s:test_missing_client() abort
   call s:reset()
-  let g:dbs = {'Banco Production': 'fakebin://u@h/master', 'Server': 'fakedb://u@h/master'}
+  let g:dbs = {'Banco Production': 'fakebin://u@h/master', 'Server': 'fakedb://u@h'}
   let g:dbui_multidb_test_dbs = ['alpha']
   call dbui_multidb#setup({'masters': ['Banco Production', 'Server']})
 
@@ -406,6 +440,52 @@ function! s:test_missing_client() abort
   call s:ok(s:index_of(info, 'Banco Production: error: vim-dadbod-manager-no-such-binary is not installed') > -1,
         \ 'info reports the missing client in plain language')
   call s:ok(s:index_of(info, 'E475') < 0, 'info holds no raw exception')
+
+  call s:end_capture()
+endfunction
+
+" A connection that fails is reported as a failed connection, not as a server
+" with no databases. vim-dadbod's db#systemlist() returns [] instead of throwing
+" when a client exits non-zero, so "no answer" has to be read as "did not
+" connect". "No databases found" is reserved for a server that answered and had
+" every database filtered away by g:dbui_multidb_exclude.
+function! s:test_empty_discovery() abort
+  call s:reset()
+  let g:dbs = {'Server': 'fakedb://u@h', 'Filtered': 'fakedb://u@h'}
+  call dbui_multidb#setup({'masters': ['Server', 'Filtered']})
+
+  call s:begin_capture()
+  let g:dbui_multidb_test_dbs = []
+  DBManager
+  let drawer = db_ui#drawer#get()
+
+  let lines = getline(1, '$')
+  call cursor(s:index_of(lines, 'Server$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call s:eq(lines[s:index_of(lines, 'Server')],
+        \ g:db_ui_icons.expanded.db . ' Server ' . g:db_ui_icons.connection_error,
+        \ 'a connection that returns nothing is marked as a failed connection')
+  call s:ok(s:index_of(lines, 'No databases found') < 0,
+        \ 'no empty database list is drawn after a failed connection')
+  call s:eq(len(s:notifications), 1, 'a failed connection is reported once')
+  call s:eq(s:notifications[0].kind, 'warning', 'a failed connection is a warning')
+  call s:ok(s:notifications[0].message =~# 'Server', 'the notification names the server')
+  call s:ok(s:notifications[0].message =~? 'no databases\|could not connect',
+        \ 'the notification explains that the connection failed')
+
+  " A server that answered and had every database excluded is not a failure.
+  let g:dbui_multidb_test_dbs = ['mysql']
+  call dbui_multidb#setup({'masters': ['Server', 'Filtered'], 'exclude': ['^mysql$']})
+  call cursor(s:index_of(getline(1, '$'), 'Filtered$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call s:eq(lines[s:index_of(lines, 'Filtered')],
+        \ g:db_ui_icons.expanded.db . ' Filtered',
+        \ 'a server whose databases are all excluded is not a failed connection')
+  call s:ok(s:index_of(lines, 'No databases found') > -1,
+        \ 'an excluded-to-empty server keeps the empty database list')
+  call s:eq(len(s:notifications), 1, 'an excluded database notifies nothing')
 
   call s:end_capture()
 endfunction
@@ -980,6 +1060,7 @@ let s:tests = [
       \ function('s:test_drawer'),
       \ function('s:test_discovery_error'),
       \ function('s:test_missing_client'),
+      \ function('s:test_empty_discovery'),
       \ function('s:test_backups_section'),
       \ function('s:test_backup_files'),
       \ function('s:test_backup_plan'),

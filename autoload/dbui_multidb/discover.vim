@@ -23,10 +23,15 @@ function! s:dedupe(list) abort
   return out
 endfunction
 
+" Lines some clients print next to the database list even in "no headers" mode:
+" the column header of a SHOW DATABASES/SELECT datname query. A database may in
+" theory be called one of these; it is far more common for the header to leak in.
+let s:not_a_database = {'name': 1, 'database': 1, 'table_name': 1}
+
 function! s:filter_names(names, exclude) abort
   let out = []
   for name in a:names
-    if empty(name)
+    if empty(name) || name =~# '^-\+$' || has_key(s:not_a_database, tolower(name))
       continue
     endif
     let skip = 0
@@ -41,6 +46,20 @@ function! s:filter_names(names, exclude) abort
     endif
   endfor
   return s:dedupe(out)
+endfunction
+
+" The database a connection URL points at, i.e. its last path segment. Empty when
+" the URL names none. sqlserver's "database=" parameter and postgresql's
+" "dbname=" are absorbed into the path by db#resolve(), so the path is
+" authoritative here.
+function! s:url_dbname(url) abort
+  try
+    let path = get(db#url#parse(a:url), 'path', '')
+  catch /.*/
+    return ''
+  endtry
+  let path = substitute(path, '^/\+\|/\+$', '', 'g')
+  return substitute(path, '^.*/', '', '')
 endfunction
 
 " The error vim-dadbod raises when the client binary of an adapter is not
@@ -95,8 +114,28 @@ function! dbui_multidb#discover#names(url, ...) abort
   if type(names) !=# type([])
     return {'names': [], 'error': 'The adapter returned an unexpected result'}
   endif
+  " An empty answer is not an empty server: every real database server always
+  " reports at least its system databases, so a client that returns nothing did not
+  " connect. vim-dadbod's db#systemlist() returns [] when the client exits
+  " non-zero instead of throwing, which is how a failed connection used to end up
+  " as "No databases found".
+  if empty(names)
+    return {'names': [], 'error': 'Could not connect to the server: the client returned no databases. Check the connection URL and credentials.'}
+  endif
 
   let names = s:filter_names(names, cfg.exclude)
+
+  " The database named in the connection URL is, by construction, a real database
+  " on that server, and some adapters omit it from their query (sqlcmd's
+  " sys.sysdatabases used to hide master). Add it when it is missing; s:dedupe()
+  " keeps the adapter's own spelling and drops the duplicate when it is already
+  " there.
+  let anchor = s:url_dbname(resolved)
+  if !empty(anchor)
+    call add(names, anchor)
+    let names = s:dedupe(names)
+  endif
+
   if cfg.sort
     call sort(names, 'i')
   endif

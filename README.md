@@ -356,6 +356,19 @@ points; the help file is vendored text and is kept byte-identical.
   `:DBManagerInfo`. Other servers are untouched: one unreachable server, or one
   client that is not installed in the shell Neovim was started from, never stops
   the others from being discovered.
+- **An empty answer means the connection failed.** vim-dadbod's `db#systemlist()`
+  returns `[]` when a client exits non-zero instead of throwing, so an adapter that
+  reports nothing did not connect. An empty list is therefore treated like any
+  other failure: the server node is marked and the notification says the client
+  returned no databases. `" No databases found` is reserved for the one case where
+  the client answered and every name was filtered away by
+  `g:dbui_multidb_exclude`.
+- **The connection's own database is always listed.** The database named in the
+  server URL (`sqlserver://…/master`, `postgresql://…/postgres`,
+  `clickhouse://…/default`) is, by construction, a real database on that server,
+  so it is added to the discovered list when an adapter's query omits it (a
+  `sqlcmd` query that misses `master`, for instance). The adapter's own spelling
+  wins and the name is never duplicated.
 - **Errors are translated.** vim-dadbod reports a missing client as
   `Vim(let):E475: Invalid value for argument cmd: 'sqlcmd' is not executable`,
   which is an implementation detail rather than a diagnosis. That exception
