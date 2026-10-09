@@ -1,4 +1,4 @@
-" Backup jobs for the "Administrative" section of the drawer.
+" Backup jobs for the "Backups" section of the drawer.
 "
 " A backup is a detached job, never something the editor waits for:
 "
@@ -7,6 +7,13 @@
 "      never touches the disk and never starts anything.
 "   2. dbui_multidb#backup#start() hands the plan to a detached shell job and
 "      reports the outcome as a notification when the job exits.
+"   3. dbui_multidb#backup#restore() plans the reverse direction: the same
+"      dispatch, with the dump fed back into the database it came from.
+"
+" The backup files of a connection are the ones this module can list, restore
+" and delete: dbui_multidb#backup#list() reads them back out of the backup
+" directory, keyed by the same name the planner generates, so the drawer can
+" show what a scheme wrote and hand it back to the matching client.
 "
 " The plan is a plain dict so that everything except the spawn itself is
 " testable without a database: the test suite drives the command lines through
@@ -45,6 +52,24 @@ let s:extensions = {
       \ 'redis': '.rdb',
       \ }
 
+" The schemes whose backup files land on this machine. Only these get a
+" Backups section: a server side scheme writes on the database host, where this
+" editor can neither list, restore nor delete anything.
+let s:local_schemes = ['postgresql', 'mysql', 'sqlite', 'mongodb', 'duckdb', 'redis', 'fakedb']
+
+" The schemes whose dump this plugin knows how to feed back into the database.
+" A local scheme that is missing here still gets a section: it is listed, and
+" restoring it says why it cannot be done from here.
+let s:restorable = ['postgresql', 'mysql', 'sqlite', 'mongodb']
+
+" The known extensions, longest first, so that ".archive.gz" is stripped before
+" ".gz" and a backup file is always split at its real extension.
+function! s:longest_first(x, y) abort
+  return len(a:y) - len(a:x)
+endfunction
+
+let s:extension_list = sort(map(values(s:extensions), 'tolower(v:val)'), function('s:longest_first'))
+
 function! dbui_multidb#backup#reset() abort
   let s:jobs = {}
   return 1
@@ -82,19 +107,32 @@ endfunction
 " Turn a plan into a detached job (or a notification, when the configuration
 " asks to only echo the command or to hand the plan to a runner).
 function! dbui_multidb#backup#start(db) abort
-  let plan = dbui_multidb#backup#plan(a:db)
-  if !get(plan, 'ok', 0)
-    let message = 'vim-dadbod-manager: ' . get(plan, 'reason', 'cannot build a backup plan.')
-    " A scheme that has no backup on this machine is not a failure: the
-    " message says so and nothing was attempted.
-    if get(plan, 'unsupported', 0)
-      call dbui_multidb#notify#warning(message)
-    else
-      call dbui_multidb#notify#error(message)
-    endif
+  return s:run(dbui_multidb#backup#plan(a:db))
+endfunction
+
+" Report why a plan cannot run. A scheme that has no command on this machine
+" is not a failure: the message says so and nothing was attempted.
+function! s:report(plan) abort
+  let message = 'vim-dadbod-manager: ' . get(a:plan, 'reason', 'cannot build a backup plan.')
+  if get(a:plan, 'unsupported', 0)
+    call dbui_multidb#notify#warning(message)
+  else
+    call dbui_multidb#notify#error(message)
+  endif
+endfunction
+
+" Run a built plan through the configured runner, the echo mode, or a real
+" detached job. Every plan goes through here, so a backup and a restore report
+" their outcome the same way.
+function! s:run(plan) abort
+  if !get(a:plan, 'ok', 0)
+    call s:report(a:plan)
     return 0
   endif
+  return s:dispatch(a:plan)
+endfunction
 
+function! s:dispatch(plan) abort
   let cfg = dbui_multidb#config#get()
 
   " g:dbui_multidb_backup_runner replaces the job entirely: it receives the plan
@@ -103,7 +141,7 @@ function! dbui_multidb#backup#start(db) abort
   let runner = get(cfg, 'backup_runner', '')
   if s:callable(runner)
     try
-      call call(s:funcref(runner), [plan])
+      call call(s:funcref(runner), [a:plan])
     catch /.*/
       call dbui_multidb#notify#error('vim-dadbod-manager: backup runner failed: ' . v:exception)
       return 0
@@ -112,11 +150,16 @@ function! dbui_multidb#backup#start(db) abort
   endif
 
   if get(cfg, 'backup_echo_command', 0)
-    call dbui_multidb#notify#info('Backup would run: ' . dbui_multidb#backup#display(plan))
+    call dbui_multidb#notify#info(s:verb(a:plan) . ' would run: ' . dbui_multidb#backup#display(a:plan))
     return 1
   endif
 
-  return s:spawn(plan)
+  return s:spawn(a:plan)
+endfunction
+
+" What the notifications call the job: "Backup" or "Restore".
+function! s:verb(plan) abort
+  return get(a:plan, 'verb', 'Backup')
 endfunction
 
 " The command line, with every password redacted.
@@ -132,6 +175,10 @@ function! dbui_multidb#backup#display(plan) abort
     let argv = masked
   endif
   let cmd = s:join(argv)
+  " A restore pipes the dump in on stdin; it never redirects stdout.
+  if !empty(get(a:plan, 'stdin_file', ''))
+    let cmd .= ' < ' . fnamemodify(a:plan.stdin_file, ':~')
+  endif
   if get(a:plan, 'stdout_target', 0) && !empty(get(a:plan, 'target', ''))
     let cmd .= ' > ' . fnamemodify(a:plan.target, ':~')
   endif
@@ -178,6 +225,291 @@ function! dbui_multidb#backup#dbname(db) abort
     return from_url
   endif
   return s:str(get(a:db, 'name', ''))
+endfunction
+
+" ---------------------------------------------------------------------------
+" Local backup files
+" ---------------------------------------------------------------------------
+
+" The canonical scheme of a connection entry or of a scheme name.
+function! s:scheme_of(value) abort
+  if type(a:value) ==# type('')
+    return s:canonical(a:value)
+  endif
+  return s:schemes(a:value).scheme
+endfunction
+
+" Whether the backup files of this connection are on this machine, i.e.
+" whether the drawer can show them at all.
+function! dbui_multidb#backup#is_local(db) abort
+  return index(s:local_schemes, s:scheme_of(a:db)) >= 0
+endfunction
+
+" Whether a dump can be fed back into the database from here.
+function! dbui_multidb#backup#restore_supported(db) abort
+  return index(s:restorable, s:scheme_of(a:db)) >= 0
+endfunction
+
+" The backup files of a connection, newest first. A file belongs to the
+" connection when its name starts with the same slug the planner generates,
+" which is what keeps two databases' backups apart in one directory.
+"
+" Each entry is {path, label, prefix, ext, mtime}: label is the file name
+" without the connection prefix and without the extension, i.e. the timestamp
+" the planner generated.
+function! dbui_multidb#backup#list(db) abort
+  let dir = s:dirname(dbui_multidb#config#get())
+  if !isdirectory(dir)
+    return []
+  endif
+
+  let prefix = s:slug(dbui_multidb#backup#dbname(a:db)) . '-'
+  let pattern = escape(dir, '*?[{') . '/' . escape(prefix, '*?[{') . '*'
+  let entries = []
+  for path in split(glob(pattern), "\n")
+    if !filereadable(path)
+      continue
+    endif
+    let name = fnamemodify(path, ':t')
+    " A job's log lives next to its backup under the same name: it is not a
+    " backup, so skip it.
+    if name =~# '\.log$'
+      continue
+    endif
+    let stem = strpart(name, len(prefix))
+    let ext = s:file_extension(stem)
+    if !empty(ext)
+      let stem = strpart(stem, 0, len(stem) - len(ext))
+    endif
+    call add(entries, {
+          \ 'path': path, 'label': stem, 'prefix': prefix,
+          \ 'ext': ext, 'mtime': getftime(path)})
+  endfor
+  call sort(entries, function('s:by_mtime'))
+  return entries
+endfunction
+
+" Newest first; the path breaks ties so a listing is always deterministic (two
+" backups in one second are ordered by name, which is the timestamp).
+function! s:by_mtime(x, y) abort
+  if a:x.mtime !=# a:y.mtime
+    return a:x.mtime > a:y.mtime ? -1 : 1
+  endif
+  if a:x.path ==# a:y.path
+    return 0
+  endif
+  return a:x.path <# a:y.path ? 1 : -1
+endfunction
+
+" The extension of a backup file name, matched against the known extensions
+" longest first. Anything else falls back to the text after the last dot, so a
+" file renamed by hand still splits into a name and an extension.
+function! s:file_extension(name) abort
+  for ext in s:extension_list
+    if len(a:name) > len(ext) && tolower(a:name[len(a:name) - len(ext) :]) ==# ext
+      return a:name[len(a:name) - len(ext) :]
+    endif
+  endfor
+  let ext = fnamemodify(a:name, ':e')
+  return empty(ext) ? '' : '.' . ext
+endfunction
+
+" The log a job writes next to its backup (see s:context): the same name with
+" ".log" instead of the dump's extension. Restoring a file logs to the same
+" place, so a failed restore leaves its log next to the dump it came from.
+function! s:log_for(path) abort
+  let name = fnamemodify(a:path, ':t')
+  let ext = s:file_extension(name)
+  if !empty(ext)
+    let name = strpart(name, 0, len(name) - len(ext))
+  endif
+  return fnamemodify(a:path, ':h') . '/' . name . '.log'
+endfunction
+
+" Accept either a path or one of the dicts dbui_multidb#backup#list() returns.
+function! s:file_path(value) abort
+  if type(a:value) ==# type({})
+    return s:str(get(a:value, 'path', ''))
+  endif
+  return s:str(a:value)
+endfunction
+
+" Build the plan for restoring one backup file into the database it came from.
+" The shape is a backup plan's, with "verb" saying what the notifications call
+" the job and "stdin_file" naming a dump a client has to read on stdin.
+function! dbui_multidb#backup#restore_plan(db, file) abort
+  let file = s:file_path(a:file)
+  if empty(file)
+    return {'ok': 0, 'reason': 'No backup file to restore here.'}
+  endif
+  if !filereadable(file)
+    return {'ok': 0, 'reason': printf('No readable backup file to restore (got %s).', file)}
+  endif
+
+  let ctx = s:context(a:db, dbui_multidb#config#get())
+  if !dbui_multidb#backup#restore_supported(a:db)
+    return {'ok': 0, 'unsupported': 1, 'reason': printf(
+          \ 'Restoring a backup of "%s" from here is not available: use the client of that database (the file is at %s).',
+          \ empty(ctx.raw) ? 'this scheme' : ctx.raw, fnamemodify(file, ':~'))}
+  endif
+
+  let log = s:log_for(file)
+  let common = {'verb': 'Restore', 'file': file, 'target': file, 'log': log, 'writes_target': 0}
+
+  if ctx.scheme ==# 'postgresql'
+    " pg_restore reads the same connection URL as psql, so only the program,
+    " the destructive options and the input file are added.
+    let argv = db#adapter#postgresql#interactive(ctx.url)
+    let argv[0] = 'pg_restore'
+    return s:plan(ctx, extend(common, {
+          \ 'kind': 'client_file',
+          \ 'argv': argv[0:1] + s:options(ctx) + ['--no-owner', '--clean', '--if-exists'] + argv[2:] + [file],
+          \ 'note': 'pg_restore drops and recreates the objects in the dump; the database itself is kept.'}))
+  endif
+
+  if ctx.scheme ==# 'mysql'
+    if !s:has_database(ctx.url)
+      return {'ok': 0, 'reason': 'No database in this connection to restore into; connect to a specific database first.'}
+    endif
+    let argv = ctx.raw ==# 'mariadb' ? db#adapter#mariadb#interactive(ctx.url) : db#adapter#mysql#interactive(ctx.url)
+    return s:plan(ctx, extend(common, {
+          \ 'kind': 'client_stdin',
+          \ 'argv': [argv[0]] + s:options(ctx) + argv[1:],
+          \ 'stdin_file': file,
+          \ 'note': 'The dump is piped into the client on stdin.'}))
+  endif
+
+  if ctx.scheme ==# 'sqlite'
+    let db_file = db#url#file_path(ctx.url)
+    if empty(db_file)
+      return {'ok': 0, 'reason': printf('No SQLite database file to restore into (got %s).', empty(ctx.url) ? 'nothing' : ctx.url)}
+    endif
+    return s:plan(ctx, extend(common, {
+          \ 'kind': 'client_file',
+          \ 'argv': ['cp', '-f', file, db_file],
+          \ 'target': db_file, 'writes_target': 1,
+          \ 'note': 'Copies the backup over the SQLite file; close every other connection to it first.'}))
+  endif
+
+  if ctx.scheme ==# 'mongodb'
+    let gzip = tolower(file) =~# '\.gz$' ? ['--gzip'] : []
+    return s:plan(ctx, extend(common, {
+          \ 'kind': 'client_file',
+          \ 'argv': ['mongorestore', '--uri', ctx.url] + s:options(ctx) + ['--archive=' . file] + gzip + ['--drop'],
+          \ 'note': 'mongorestore --drop replaces the collections found in the archive.'}))
+  endif
+
+  return {'ok': 0, 'unsupported': 1, 'reason': printf(
+        \ 'Restoring a backup of "%s" from here is not available.', empty(ctx.raw) ? 'this scheme' : ctx.raw)}
+endfunction
+
+" Restore one backup file into its database, after a confirmation. The plan is
+" built first, so an unsupported scheme or a missing file is reported instead of
+" turning into a prompt.
+function! dbui_multidb#backup#restore(db, file) abort
+  let file = s:file_path(a:file)
+  let plan = dbui_multidb#backup#restore_plan(a:db, file)
+  if !get(plan, 'ok', 0)
+    call s:report(plan)
+    return 0
+  endif
+  if !dbui_multidb#backup#confirm(printf('Restore %s into "%s"? This overwrites what the dump contains.',
+        \ fnamemodify(file, ':t'), dbui_multidb#backup#dbname(a:db)))
+    return 0
+  endif
+  return s:dispatch(plan)
+endfunction
+
+" Delete a backup file and the log next to it. Only the files the section
+" lists are accepted, so a mistyped path cannot remove something else.
+function! dbui_multidb#backup#delete_file(db, file) abort
+  let path = s:file_path(a:file)
+  if empty(path) || !filereadable(path)
+    call dbui_multidb#notify#error(printf('vim-dadbod-manager: no such backup file: %s.',
+          \ empty(path) ? 'nothing' : fnamemodify(path, ':~')))
+    return 0
+  endif
+
+  let owned = 0
+  for entry in dbui_multidb#backup#list(a:db)
+    if entry.path ==# path
+      let owned = 1
+      break
+    endif
+  endfor
+  if !owned
+    call dbui_multidb#notify#error(printf('vim-dadbod-manager: %s is not a backup of this connection.',
+          \ fnamemodify(path, ':~')))
+    return 0
+  endif
+
+  if delete(path) != 0
+    call dbui_multidb#notify#error(printf('vim-dadbod-manager: cannot delete %s.', fnamemodify(path, ':~')))
+    return 0
+  endif
+  let log = s:log_for(path)
+  if filereadable(log)
+    call delete(log)
+  endif
+  call dbui_multidb#notify#info('Backup deleted: ' . fnamemodify(path, ':~'))
+  return 1
+endfunction
+
+" Rename one backup file, keeping its connection prefix and its extension:
+" only the label (the timestamp the planner generated) changes, so the listing
+" keeps grouping the file under its connection.
+function! dbui_multidb#backup#rename_file(file, label, ...) abort
+  let path = s:file_path(a:file)
+  if empty(path) || !filereadable(path)
+    call dbui_multidb#notify#error(printf('vim-dadbod-manager: no such backup file: %s.',
+          \ empty(path) ? 'nothing' : fnamemodify(path, ':~')))
+    return 0
+  endif
+
+  let name = fnamemodify(path, ':t')
+  let prefix = a:0 ? s:str(a:1) : s:rename_prefix(name)
+  let label = s:label(a:label)
+  if empty(label)
+    call dbui_multidb#notify#error('vim-dadbod-manager: a backup name is needed.')
+    return 0
+  endif
+
+  let target = fnamemodify(path, ':h') . '/' . prefix . label . s:file_extension(name)
+  if target ==# path
+    return 1
+  endif
+  if filereadable(target) || isdirectory(target)
+    call dbui_multidb#notify#error(printf('vim-dadbod-manager: %s already exists.', fnamemodify(target, ':~')))
+    return 0
+  endif
+  if rename(path, target) != 0
+    call dbui_multidb#notify#error(printf('vim-dadbod-manager: cannot rename %s.', fnamemodify(path, ':~')))
+    return 0
+  endif
+  call dbui_multidb#notify#info('Backup renamed: ' . fnamemodify(target, ':~'))
+  return 1
+endfunction
+
+" The "<connection>-" part of a backup file name. The section passes it
+" explicitly; a bare path falls back to the text before the timestamp the
+" planner generates.
+function! s:rename_prefix(name) abort
+  let match = matchlist(a:name, '^\(.\{-}-\)\d\{8\}-\d\{6\}')
+  return empty(match) ? '' : match[1]
+endfunction
+
+" A filesystem-safe label for a renamed backup.
+function! s:label(name) abort
+  let label = substitute(s:str(a:name), '[^A-Za-z0-9._-]', '-', 'g')
+  let label = substitute(label, '^-\+', '', '')
+  let label = substitute(label, '-\+$', '', '')
+  return label[0 : 63]
+endfunction
+
+" Ask a destructive question. A wrapper around confirm() rather than a bare
+" call, so the suite can answer it without a UI.
+function! dbui_multidb#backup#confirm(question) abort
+  return confirm(a:question, "&Yes\n&No", 2, 'Warning') == 1
 endfunction
 
 " nvim jobstart() on_exit handler (job-id, exit-code, event).
@@ -441,31 +773,34 @@ function! s:spawn(plan) abort
       let s:jobs[string(get(info, 'process', 0))] = a:plan
     endif
   catch /.*/
-    call dbui_multidb#notify#error(printf('vim-dadbod-manager: cannot start the backup: %s', v:exception))
+    call dbui_multidb#notify#error(printf('vim-dadbod-manager: cannot start the %s: %s', tolower(s:verb(a:plan)), v:exception))
     return 0
   endtry
 
-  call dbui_multidb#notify#info(printf('Backup started: %s%s', s:target_label(a:plan), s:remote_hint(a:plan)))
+  call dbui_multidb#notify#info(printf('%s started: %s%s', s:verb(a:plan), s:target_label(a:plan), s:remote_hint(a:plan)))
   return 1
 endfunction
 
-" The sh -c string: the command with stdout routed to the target (for commands
-" that dump to stdout) or /dev/null, and stderr always to the log.
+" The sh -c string: the command with its input on stdin when it has one, stdout
+" routed to the target (for commands that dump to stdout) or /dev/null, and
+" stderr always to the log.
 function! s:command(plan) abort
   let out = get(a:plan, 'stdout_target', 0) && !empty(a:plan.target)
         \ ? s:sh_quote(a:plan.target) : s:devnull()
-  return printf('%s > %s 2> %s', s:join(a:plan.argv), out, s:sh_quote(a:plan.log))
+  let stdin = empty(get(a:plan, 'stdin_file', ''))
+        \ ? '' : ' < ' . s:sh_quote(a:plan.stdin_file)
+  return printf('%s%s > %s 2> %s', s:join(a:plan.argv), stdin, out, s:sh_quote(a:plan.log))
 endfunction
 
 function! s:finish(plan, code) abort
   call filter(s:jobs, 'v:val isnot# a:plan')
   let label = s:target_label(a:plan) . s:remote_hint(a:plan)
   if a:code == 0
-    call dbui_multidb#notify#info('Backup finished: ' . label)
+    call dbui_multidb#notify#info(s:verb(a:plan) . ' finished: ' . label)
   else
     call dbui_multidb#notify#warning(printf(
-          \ 'Backup failed (exit %d): %s. See %s.',
-          \ a:code, label, fnamemodify(a:plan.log, ':~')))
+          \ '%s failed (exit %d): %s. See %s.',
+          \ s:verb(a:plan), a:code, label, fnamemodify(a:plan.log, ':~')))
   endif
 endfunction
 
@@ -549,6 +884,8 @@ function! s:plan(ctx, overrides) abort
         \ 'writes_target': 1,
         \ 'stdout_target': 0,
         \ 'local': 1,
+        \ 'verb': 'Backup',
+        \ 'stdin_file': '',
         \ 'secret': a:ctx.secret,
         \ }
   call extend(plan, a:overrides)

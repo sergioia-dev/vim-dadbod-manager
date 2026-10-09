@@ -137,11 +137,11 @@ let g:dbui_multidb_exclude = ['_test$', '_staging$']
 | `g:dbui_multidb_cache` | `1` | Discover once per server and reuse the result on later expansions. `0` re-queries on every expansion. |
 | `g:dbui_multidb_notify` | `1` | Show an info notification while a discovery is running. Failures are always notified: they are the reason the server node came back empty. |
 | `g:dbui_multidb_server_icons` | `{}` | Override the toggle icon of server nodes: `{'server_expanded': '▼', 'server_collapsed': '▶'}`. Unset keys fall back to `g:db_ui_icons`. |
-| `g:dbui_multidb_backup_section` | `1` | Draw the per-database **Administrative** section (which holds the **Backup** action) on expanded databases. `0` hides it. |
+| `g:dbui_multidb_backup_section` | `1` | Draw the per-database **Backups** section (lists backups, restores them, and offers a **New backup** action) on expanded client-side databases. `0` hides it. |
 | `g:dbui_multidb_backup_dir` | `'~/dbui-backups'` | Where client-side backups are written. `~` and `$VARS` are expanded. |
 | `g:dbui_multidb_backup_commands` | `{}` | Override a backup command by scheme (see [Backups](#backups)). |
 | `g:dbui_multidb_backup_options` | `{}` | Extra flags inserted into a built-in command, by scheme. |
-| `g:dbui_multidb_backup_server_dirs` | `{}` | Destination **on the server** for the server-side schemes (`sqlserver`, `clickhouse`, `oracle`). Without it those schemes have no backup to run — sqlserver says so; see [Backups](#backups). |
+| `g:dbui_multidb_backup_server_dirs` | `{}` | Destination **on the server** for the server-side schemes (`sqlserver`, `clickhouse`, `oracle`), which have no Backups section and only back up through the planner API; see [Backups](#backups). |
 | `g:dbui_multidb_backup_runner` | `''` | A function name that receives the backup plan and replaces the spawn entirely. |
 | `g:dbui_multidb_backup_echo_command` | `0` | `1` shows the redacted command as a notification instead of running it. |
 
@@ -183,23 +183,27 @@ loads, so set it in your configuration; changed later, it needs
 
 ## Backups
 
-An **expanded** database ends with an **Administrative** section; expand it and press
-`<CR>` on **Backup** to start a backup of that database. A backup is a detached job:
-the editor is never blocked, and a notification reports when it starts and again when
-it finishes (or fails, with the log to read). Passwords never reach a notification:
-the command is built from the connection URL, which carries the credentials, and the
-displayed command is redacted.
+An **expanded** client-side database ends with a **Backups** section; expand it to see
+the backup files that connection owns (newest first) and a **New backup** action.
+`<CR>` on **New backup** starts a backup of that database; `<CR>` on a file restores it
+into the database it came from (after a confirmation), `d` deletes it, and `r` renames
+it. A backup or restore is a detached job: the editor is never blocked, and a
+notification reports when it starts and again when it finishes (or fails, with the log
+to read). Passwords never reach a notification: the command is built from the
+connection URL, which carries the credentials, and the displayed command is redacted.
 
 ```
 ▾ app
     ▸ Saved queries (0)
     ▸ Tables (128)
-    ▸ Administrative
-        Backup
+    ▾ Backups (1)
+        20240101-120000
+        + New backup
 ```
 
-The Administrative section reuses the `tables` toggle icon; `g:db_ui_icons.backup`
-gives the Backup leaf an icon (unset, the leaf is just its label).
+The Backups section reuses the `tables` toggle icon, and the **New backup** leaf uses
+`g:db_ui_icons.new_query` (the same mark as the connection's "New query" action).
+Backup files render without an icon.
 
 The command for each scheme, and where the dump lands:
 
@@ -211,16 +215,25 @@ The command for each scheme, and where the dump lands:
 | `mongodb` | `mongodump --archive --gzip` | local |
 | `duckdb` | `duckdb … "EXPORT DATABASE … (FORMAT PARQUET)"` | local (a directory) |
 | `redis` | `redis-cli --rdb` | local |
-| `sqlserver` | **not available** — see below; `sqlcmd -Q "BACKUP DATABASE …"` only with `…_server_dirs.sqlserver` | server (or nowhere) |
+| `sqlserver` | no section; `sqlcmd -Q "BACKUP DATABASE …"` through the planner only, with `…_server_dirs.sqlserver` | server (or nowhere) |
 | `clickhouse` | `clickhouse-client -q "BACKUP DATABASE … TO Disk(…)"` | **server** (`…_server_dirs.clickhouse` = disk name) |
 | `oracle` | `expdp` | **server** (`…_server_dirs.oracle` = Oracle `DIRECTORY` object) |
 
 Files are named `<database>-<timestamp>.<ext>` under the destination; an existing file
 is never overwritten (a `-1`, `-2`, … suffix is appended instead).
 
-**Server-side schemes are safe by default.** `sqlcmd`, `clickhouse-client` and `expdp`
-write on the database server, not on your machine, so they refuse to plan until you
-tell them where to write via `g:dbui_multidb_backup_server_dirs`:
+The section appears only for client-side schemes — `postgresql`, `mysql`/`mariadb`,
+`sqlite`, `mongodb`, `duckdb`, `redis` — whose dumps land on this machine, where the
+drawer can list them. Restoring a file from the drawer is supported for `postgresql`,
+`mysql`, `sqlite` and `mongodb`; for the others the file is listed, but `<CR>` explains
+that it has to be restored with that database's own client.
+
+**Server-side schemes have no Backups section.** `sqlcmd`, `clickhouse-client` and
+`expdp` write on the database server, not on your machine, so there is nothing here to
+list, restore or delete: the drawer draws no section for `sqlserver`, `clickhouse` and
+`oracle`. Their commands in the table above still plan through the plugin's planner API
+(`dbui_multidb#backup#plan()`), which refuses to run them until you tell the planner
+where the server should write via `g:dbui_multidb_backup_server_dirs`:
 
 ```vim
 let g:dbui_multidb_backup_server_dirs = {
@@ -230,21 +243,8 @@ let g:dbui_multidb_backup_server_dirs = {
       \ }
 ```
 
-**SQL Server has no backup of its own: pressing Backup says so.** SQL Server keeps its
-`.bak` files on its own disk — the only command that writes one is
-`BACKUP DATABASE … TO DISK`, which the *server* runs — and unlike postgresql and
-mysql it has no client side dump tool, so there is nothing this plugin can run on
-your machine. Rather than point at a server directory nobody asked for, the Backup
-action on a SQL Server connection reports it:
-
-> vim-dadbod-manager: Backups are not available for "sqlserver": SQL Server writes
-> .bak files on the server host and has no client side dump tool. Set
-> g:dbui_multidb_backup_server_dirs.sqlserver to a directory on the server, or
-> g:dbui_multidb_backup_commands.sqlserver for a client side export.
-
-That notification is a warning, not a failure: nothing was attempted. The two keys
-it names are the ways out — a directory on the server (the `sqlcmd` spelling above),
-or a client side command of your own in `g:dbui_multidb_backup_commands.sqlserver`.
+Without that key the planner reports the backup as **not available** rather than
+pretending one ran.
 
 ### Overriding the command
 

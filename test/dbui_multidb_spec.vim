@@ -275,8 +275,8 @@ function! s:test_drawer() abort
   call s:ok(s:index_of(lines, 'Saved queries (0)$') > -1, 'a database renders its saved queries')
   call s:ok(s:index_of(lines, 'Tables (2)$') > -1, 'a database renders its tables')
   call s:eq(drawer.dbui.dbs['Server_g:dbs::alpha'].expanded, 1, 'a database keeps its expansion state')
-  call s:eq(lines[server + 6], '    ' . g:db_ui_icons.collapsed.tables . ' Administrative',
-        \ 'a database appends its Administrative section after its tables')
+  call s:eq(lines[server + 6], '    ' . g:db_ui_icons.collapsed.tables . ' Backups (0)',
+        \ 'a database appends its Backups section after its tables')
 
   call cursor(s:index_of(lines, 'alpha$') + 1, 1)
   call drawer.toggle_line('')
@@ -410,50 +410,185 @@ function! s:test_missing_client() abort
   call s:end_capture()
 endfunction
 
-" The Administrative section and its Backup leaf are part of the drawer, wired
-" to the backup planner through the call_method dispatch.
-function! s:test_backup_section() abort
+" The Backups section: one per expanded client-side database, listing the
+" connection's own backup files (newest first) and the action that creates a
+" new one. Server-side schemes get none, and the section honours
+" g:dbui_multidb_backup_section.
+function! s:test_backups_section() abort
   call s:reset()
   let g:dbs = {'Server': 'fakedb://u@h/master', 'Plain': 'sqlite:/var/lib/plain.db'}
   let g:dbui_multidb_test_dbs = ['alpha']
   let g:dbui_multidb_test_tables = ['orders']
   call dbui_multidb#setup({'masters': ['Server']})
 
+  " Two backups owned by alpha, one foreign file that must be ignored.
+  call mkdir(g:dbui_multidb_backup_dir, 'p')
+  let older = g:dbui_multidb_backup_dir . '/alpha-20240101-120000.sqlite3'
+  let newer = g:dbui_multidb_backup_dir . '/alpha-20240202-090000.sqlite3'
+  call writefile([], older)
+  call writefile([], newer)
+  call writefile([], g:dbui_multidb_backup_dir . '/beta-20240101-000000.sqlite3')
+
   call s:begin_capture()
   DBManager
   let drawer = db_ui#drawer#get()
 
-  " A collapsed tree shows no Administrative section at all.
+  " A collapsed tree shows no Backups section at all.
   let lines = getline(1, '$')
-  call s:ok(s:index_of(lines, 'Administrative$') < 0,
-        \ 'a collapsed database shows no Administrative section')
+  call s:ok(s:index_of(lines, 'Backups') < 0, 'a collapsed tree shows no Backups section')
 
-  " Expand Server, then alpha, then alpha's Administrative section.
+  " Expand Server, then alpha.
   call cursor(s:index_of(lines, 'Server$') + 1, 1)
   call drawer.toggle_line('')
   let lines = getline(1, '$')
   call cursor(s:index_of(lines, 'alpha$') + 1, 1)
   call drawer.toggle_line('')
   let lines = getline(1, '$')
-  let admin = s:index_of(lines, '^    \S* Administrative$')
-  call s:ok(admin > -1, 'an expanded database appends its Administrative section')
-  call cursor(admin + 1, 1)
+  let section = s:index_of(lines, '^    \S* Backups (2)$')
+  call s:ok(section > -1, 'an expanded database appends its Backups section with the file count')
+
+  " Expand the section: files newest first, then the action that creates one.
+  call cursor(section + 1, 1)
   call drawer.toggle_line('')
   let lines = getline(1, '$')
-  let backup = s:index_of(lines, '^      Backup$')
-  call s:ok(backup > -1, 'expanding Administrative reveals the Backup action')
-  call s:eq(lines[backup], '      Backup', 'the Backup action nests under Administrative')
+  let section = s:index_of(lines, '^    \S* Backups (2)$')
+  call s:eq(lines[section + 1], '      20240202-090000', 'the newest backup is listed first')
+  call s:eq(lines[section + 2], '      20240101-120000', 'every backup file is listed')
+  call s:eq(lines[section + 3], '      ' . g:db_ui_icons.new_query . ' New backup',
+        \ 'the section ends with the New backup action')
+  call s:ok(s:index_of(lines, 'beta-') < 0, 'a foreign file is not listed')
 
-  " <CR> on Backup reaches the planner: fakedb has no backup command, so the
-  " user gets an explanation and the runner is never handed a plan.
-  call cursor(backup + 1, 1)
+  " <CR> on New backup reaches the planner: fakedb has no built-in command, so
+  " the user gets an explanation and the runner is never handed a plan.
+  call cursor(section + 4, 1)
   call drawer.toggle_line('')
   call s:eq(len(g:dbui_multidb_test_backup_plans), 0, 'a failed plan never reaches the runner')
   call s:eq(len(s:notifications), 1, 'the failed plan reports exactly once')
   call s:eq(s:notifications[0].kind, 'error', 'a failed plan is an error')
   call s:ok(s:notifications[0].message =~# 'fakedb', 'the error names the scheme')
 
+  " A configured command turns the same action into a recorded plan.
+  let g:dbui_multidb_backup_commands = {'fakedb': ['echo', '{name}', '{output}']}
+  call cursor(section + 4, 1)
+  call drawer.toggle_line('')
+  call s:eq(len(g:dbui_multidb_test_backup_plans), 1, 'a configured command reaches the runner')
+  call s:eq(g:dbui_multidb_test_backup_plans[0].verb, 'Backup', 'the recorded plan is a backup')
+  call s:eq(g:dbui_multidb_test_backup_plans[0].argv[0], 'echo', 'the template argv is preserved')
+
+  " <CR> on a file entry restores it; fakedb has no client-side restore, so
+  " the confirmation is never reached and the user is told why.
+  call cursor(section + 3, 1)
+  call drawer.toggle_line('')
+  call s:eq(len(g:dbui_multidb_test_backup_plans), 1, 'an unsupported restore never reaches the runner')
+  call s:ok(s:notifications[-1].message =~# 'not available', 'the unsupported restore says it is not available')
+
+  " d on a file entry deletes it, and the section re-renders without it.
+  call cursor(section + 3, 1)
+  call drawer.delete_line()
+  call s:eq(filereadable(older), 0, 'd deletes the backup file')
+  let lines = getline(1, '$')
+  call s:ok(s:index_of(lines, '20240101-120000') < 0, 'the deleted file leaves the section')
+
+  " r on a file entry renames it (input is stubbed), keeping prefix and ext.
+  function! db_ui#utils#input(name, default) abort
+    return 'kept'
+  endfunction
+  call cursor(s:index_of(lines, '20240202-090000$') + 1, 1)
+  call drawer.rename_line()
+  call s:eq(filereadable(newer), 0, 'r renames the backup file away from its old name')
+  call s:ok(filereadable(g:dbui_multidb_backup_dir . '/alpha-kept.sqlite3'),
+        \ 'the renamed file keeps its prefix and extension')
+
+  runtime autoload/db_ui/utils.vim
   call s:end_capture()
+endfunction
+
+" The client-side classification, the file listing, and the restore, delete
+" and rename helpers the section builds on.
+function! s:test_backup_files() abort
+  call s:reset()
+
+  for scheme in ['postgresql', 'mysql', 'sqlite', 'mongodb', 'duckdb', 'redis', 'fakedb']
+    call s:ok(dbui_multidb#backup#is_local({'url': scheme . '://u@h/x'}), scheme . ' is client-side')
+  endfor
+  for scheme in ['sqlserver', 'clickhouse', 'oracle']
+    call s:ok(!dbui_multidb#backup#is_local({'url': scheme . '://u@h/x'}), scheme . ' is server-side')
+  endfor
+  call s:ok(dbui_multidb#backup#is_local('postgres'), 'is_local accepts a scheme spelling')
+  for scheme in ['postgresql', 'mysql', 'sqlite', 'mongodb']
+    call s:ok(dbui_multidb#backup#restore_supported(scheme), scheme . ' is restorable')
+  endfor
+  call s:ok(!dbui_multidb#backup#restore_supported('duckdb'), 'duckdb cannot be restored from here')
+  call s:ok(!dbui_multidb#backup#restore_supported('fakedb'), 'fakedb cannot be restored from here')
+
+  " list(): owned files only, newest first, label/prefix/ext parsed.
+  call mkdir(g:dbui_multidb_backup_dir, 'p')
+  let f_old = g:dbui_multidb_backup_dir . '/alpha-20240101-120000.archive.gz'
+  let f_new = g:dbui_multidb_backup_dir . '/alpha-20240202-090000.archive.gz'
+  call writefile([], f_old)
+  call writefile([], f_new)
+  call writefile([], g:dbui_multidb_backup_dir . '/beta-20240101-000000.sqlite3')
+  call writefile([], g:dbui_multidb_backup_dir . '/alpha-20240101-120000.log')
+  let entries = dbui_multidb#backup#list({'url': 'mongodb://u@h/alpha', 'name': 'alpha'})
+  call s:eq(map(copy(entries), 'v:val.label'), ['20240202-090000', '20240101-120000'],
+        \ 'list returns owned backups, newest first, without logs or foreign files')
+  call s:eq(entries[0].prefix, 'alpha-', 'list reports the connection prefix')
+  call s:eq(entries[0].ext, '.archive.gz', 'list strips the longest known extension')
+
+  " restore_plan: each restorable scheme.
+  let pg = dbui_multidb#backup#restore_plan({'url': 'postgresql://u:pw@h:5432/app', 'name': 'app'}, f_old)
+  call s:eq(pg.ok, 1, 'postgresql restores')
+  call s:eq(pg.argv[0], 'pg_restore', 'postgresql restore uses pg_restore')
+  call s:ok(index(pg.argv, '--clean') >= 0, 'postgresql restore drops and recreates')
+  call s:ok(dbui_multidb#backup#display(pg) !~# 'pw', 'restore display redacts the password')
+
+  let my = dbui_multidb#backup#restore_plan({'url': 'mysql://root:pw@h:3306/app', 'name': 'app'}, f_old)
+  call s:eq(my.ok, 1, 'mysql restores')
+  call s:eq(my.kind, 'client_stdin', 'mysql restore pipes the dump on stdin')
+  call s:ok(!empty(my.stdin_file), 'mysql restore names its stdin file')
+
+  let sq = dbui_multidb#backup#restore_plan({'url': 'sqlite:/var/lib/plain.db', 'name': 'plain'}, f_old)
+  call s:eq(sq.ok, 1, 'sqlite restores')
+  call s:eq(sq.argv[0], 'cp', 'sqlite restore copies the file over the database')
+
+  let mg = dbui_multidb#backup#restore_plan({'url': 'mongodb://u:pw@h/app', 'name': 'app'}, f_old)
+  call s:eq(mg.ok, 1, 'mongodb restores')
+  call s:ok(index(mg.argv, '--drop') >= 0, 'mongodb restore drops first')
+  call s:ok(index(mg.argv, '--gzip') >= 0, 'mongodb restore keeps the gzip flag')
+
+  let missing = dbui_multidb#backup#restore_plan({'url': 'postgresql://u@h/app', 'name': 'app'}, g:dbui_multidb_backup_dir . '/nope.dump')
+  call s:eq(missing.ok, 0, 'a missing backup refuses to restore')
+  call s:eq(get(missing, 'unsupported', 0), 0, 'a missing backup is not "unsupported"')
+
+  " restore() asks first, and only then hands the plan to the runner.
+  function! dbui_multidb#backup#confirm(question) abort
+    return 0
+  endfunction
+  call dbui_multidb#backup#restore({'url': 'postgresql://u@h/app', 'name': 'app'}, f_old)
+  call s:eq(len(g:dbui_multidb_test_backup_plans), 0, 'a declined restore never reaches the runner')
+  function! dbui_multidb#backup#confirm(question) abort
+    return 1
+  endfunction
+  call dbui_multidb#backup#restore({'url': 'postgresql://u@h/app', 'name': 'app'}, f_old)
+  call s:eq(len(g:dbui_multidb_test_backup_plans), 1, 'a confirmed restore reaches the runner')
+  call s:eq(g:dbui_multidb_test_backup_plans[0].verb, 'Restore', 'the recorded plan is a restore')
+  runtime autoload/dbui_multidb/backup.vim
+
+  " delete_file refuses a foreign file, deletes an owned one with its log.
+  call s:eq(dbui_multidb#backup#delete_file({'url': 'mongodb://u@h/alpha', 'name': 'alpha'}, g:dbui_multidb_backup_dir . '/beta-20240101-000000.sqlite3'), 0,
+        \ 'a foreign file is refused')
+  call s:eq(dbui_multidb#backup#delete_file({'url': 'mongodb://u@h/alpha', 'name': 'alpha'}, f_old), 1,
+        \ 'an owned file is deleted')
+  call s:eq(filereadable(f_old), 0, 'the file is gone')
+  call s:eq(filereadable(g:dbui_multidb_backup_dir . '/alpha-20240101-120000.log'), 0, 'the log next to it is gone')
+
+  " rename_file sanitises the label, keeps the extension, and refuses a clash.
+  call s:eq(dbui_multidb#backup#rename_file(f_new, 'kept', 'alpha-'), 1, 'rename succeeds')
+  let renamed = g:dbui_multidb_backup_dir . '/alpha-kept.archive.gz'
+  call s:ok(filereadable(renamed), 'the extension is kept')
+  let third = g:dbui_multidb_backup_dir . '/alpha-20240303-000000.archive.gz'
+  call writefile([], third)
+  call s:eq(dbui_multidb#backup#rename_file(third, 'kept', 'alpha-'), 0, 'rename refuses an existing target')
 endfunction
 
 " The command lines: every built-in scheme, the override forms, redaction, the
@@ -823,7 +958,8 @@ let s:tests = [
       \ function('s:test_drawer'),
       \ function('s:test_discovery_error'),
       \ function('s:test_missing_client'),
-      \ function('s:test_backup_section'),
+      \ function('s:test_backups_section'),
+      \ function('s:test_backup_files'),
       \ function('s:test_backup_plan'),
       \ function('s:test_dbmanager_commands'),
       \ function('s:test_notification_title'),

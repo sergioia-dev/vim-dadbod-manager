@@ -15,7 +15,7 @@ Vendored: the runtime of the plugin — `autoload/db_ui.vim`, `autoload/db_ui/*.
 `.github/`, `README.md`, `.themisrc` and `run.sh` are not vendored.
 
 Everything this plugin adds lives under `autoload/dbui_multidb/` and
-`plugin/dbui_multidb.vim` — including the per-database Backup action
+`plugin/dbui_multidb.vim` — including the per-database Backups section
 (`autoload/dbui_multidb/administrative.vim`, `autoload/dbui_multidb/backup.vim`).
 None of it edits the vendored tree, so `scripts/vendored-files.sha256` stays valid
 unchanged.

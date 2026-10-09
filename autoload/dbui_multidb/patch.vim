@@ -19,7 +19,7 @@
 " stored on a dict does not (E121).
 
 function! dbui_multidb#patch#methods() abort
-  return ['add_db', 'toggle_db', 'populate', 'render']
+  return ['add_db', 'toggle_db', 'populate', 'render', 'delete_line', 'rename_line']
 endfunction
 
 " Methods that must exist for the patch to be applicable.
@@ -60,7 +60,8 @@ function! dbui_multidb#patch#apply() abort
     let drawer['dbui_multidb_orig_' . method] = drawer[method]
     let drawer[method] = function('dbui_multidb#patch#' . method, drawer)
   endfor
-  let drawer.dbui_multidb_backup = function('dbui_multidb#administrative#backup', drawer)
+  let drawer.dbui_multidb_new_backup = function('dbui_multidb#administrative#new_backup', drawer)
+  let drawer.dbui_multidb_backup_file = function('dbui_multidb#administrative#backup_file', drawer)
   let drawer.dbui_multidb_patched = 1
 
   return 1
@@ -163,4 +164,24 @@ function! dbui_multidb#patch#render(...) abort dict
     return self.dbui_multidb_orig_render(a:1)
   endif
   return self.dbui_multidb_orig_render()
+endfunction
+
+" d on a backup file entry deletes the file; any other line keeps upstream
+" behaviour (the originals are stored under dbui_multidb_orig_*).
+function! dbui_multidb#patch#delete_line() abort dict
+  let item = dbui_multidb#administrative#backup_item(self)
+  if !empty(item)
+    return dbui_multidb#administrative#delete_file(self, item)
+  endif
+  return self.dbui_multidb_orig_delete_line()
+endfunction
+
+" r on a backup file entry renames the file; any other line keeps upstream
+" behaviour.
+function! dbui_multidb#patch#rename_line() abort dict
+  let item = dbui_multidb#administrative#backup_item(self)
+  if !empty(item)
+    return dbui_multidb#administrative#rename_file(self, item)
+  endif
+  return self.dbui_multidb_orig_rename_line()
 endfunction
