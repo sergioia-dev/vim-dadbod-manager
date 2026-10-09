@@ -141,7 +141,7 @@ let g:dbui_multidb_exclude = ['_test$', '_staging$']
 | `g:dbui_multidb_cache` | `1` | Discover once per server and reuse the result on later expansions. `0` re-queries on every expansion. |
 | `g:dbui_multidb_notify` | `1` | Show an info notification while a discovery is running. Failures are always notified: they are the reason the server node came back empty. |
 | `g:dbui_multidb_server_icons` | `{}` | Override the toggle icon of server nodes: `{'server_expanded': '▼', 'server_collapsed': '▶'}`. Unset keys fall back to `g:db_ui_icons`. |
-| `g:dbui_multidb_backup_section` | `1` | Draw the per-database **Administrative** section (which holds the **Backup** action). `0` hides it. |
+| `g:dbui_multidb_backup_section` | `1` | Draw the per-database **Administrative** section (which holds the **Backup** action) on expanded databases. `0` hides it. |
 | `g:dbui_multidb_backup_dir` | `'~/dbui-backups'` | Where client-side backups are written. `~` and `$VARS` are expanded. |
 | `g:dbui_multidb_backup_commands` | `{}` | Override a backup command by scheme (see [Backups](#backups)). |
 | `g:dbui_multidb_backup_options` | `{}` | Extra flags inserted into a built-in command, by scheme. |
@@ -162,7 +162,7 @@ loads, so set it in your configuration; changed later, it needs
 
 ## Backups
 
-Every database node ends with an **Administrative** section; expand it and press
+An **expanded** database ends with an **Administrative** section; expand it and press
 `<CR>` on **Backup** to start a backup of that database. A backup is a detached job:
 the editor is never blocked, and a notification reports when it starts and again when
 it finishes (or fails, with the log to read). Passwords never reach a notification:
@@ -170,7 +170,7 @@ the command is built from the connection URL, which carries the credentials, and
 displayed command is redacted.
 
 ```
-▸ app
+▾ app
     ▸ Saved queries (0)
     ▸ Tables (128)
     ▸ Administrative

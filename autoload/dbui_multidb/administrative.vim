@@ -69,10 +69,15 @@ endfunction
 " Append the section to a database the drawer just drew. Called by the add_db
 " patch, so a:db is the real entry from drawer.dbui.dbs and the returned state
 " survives a re-render. Returns 1 when the section was added, 0 when
-" g:dbui_multidb_backup_section turned it off.
+" g:dbui_multidb_backup_section turned it off, or the database is collapsed.
 function! dbui_multidb#administrative#append(drawer, db) abort
   let state = dbui_multidb#administrative#state(a:db)
   if empty(get(dbui_multidb#config#get(), 'backup_section', 1))
+    return 0
+  endif
+  " The section belongs to an expanded database only: a collapsed node keeps
+  " the exact shape vim-dadbod-ui draws for it.
+  if !get(a:db, 'expanded', 0)
     return 0
   endif
 

@@ -226,13 +226,10 @@ function! s:test_drawer() abort
   let expanded = g:db_ui_icons.expanded.db
 
   let lines = getline(1, '$')
-  call s:eq(len(lines), 3, 'a collapsed tree has one line per connection plus each database section')
+  call s:eq(len(lines), 2, 'a collapsed tree has one line per connection')
   let server = s:index_of(lines, 'Server$')
   call s:eq(lines[server], collapsed . ' Server', 'a server node is drawn like a connection')
-  let plain = s:index_of(lines, 'Plain$')
-  call s:ok(plain > -1, 'connections that are not servers are drawn')
-  call s:eq(lines[plain + 1], '  ' . g:db_ui_icons.collapsed.tables . ' Administrative',
-        \ 'a plain connection shows its collapsed Administrative section')
+  call s:ok(s:index_of(lines, 'Plain$') > -1, 'connections that are not servers are untouched')
 
   " Expand the server node exactly like <Plug>(DBUI_SelectLine) does.
   call cursor(server + 1, 1)
@@ -242,9 +239,7 @@ function! s:test_drawer() abort
   call s:eq(lines[server], expanded . ' Server', 'an expanded server node shows the expanded icon')
   call s:eq(lines[server + 1], '  " Databases (2)', 'an expanded server node announces its databases')
   call s:eq(lines[server + 2], '  ' . collapsed . ' alpha', 'databases are drawn one level down, sorted')
-  call s:eq(lines[server + 3], '    ' . g:db_ui_icons.collapsed.tables . ' Administrative',
-        \ 'a collapsed database still shows its Administrative section')
-  call s:eq(lines[server + 4], '  ' . collapsed . ' beta', 'every discovered database is drawn')
+  call s:eq(lines[server + 3], '  ' . collapsed . ' beta', 'every discovered database is drawn')
 
   let dbs = drawer.dbui.dbs
   call s:ok(has_key(dbs, 'Server_g:dbs::alpha'), 'a database is keyed by its server and name')
@@ -422,11 +417,10 @@ function! s:test_backup_section() abort
   DBManager
   let drawer = db_ui#drawer#get()
 
-  " Every database node carries a collapsed Administrative section.
+  " A collapsed tree shows no Administrative section at all.
   let lines = getline(1, '$')
-  let plain = s:index_of(lines, 'Plain$')
-  call s:eq(lines[plain + 1], '  ' . g:db_ui_icons.collapsed.tables . ' Administrative',
-        \ 'a plain connection shows its collapsed Administrative section')
+  call s:ok(s:index_of(lines, 'Administrative$') < 0,
+        \ 'a collapsed database shows no Administrative section')
 
   " Expand Server, then alpha, then alpha's Administrative section.
   call cursor(s:index_of(lines, 'Server$') + 1, 1)
