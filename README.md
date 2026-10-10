@@ -1,4 +1,4 @@
-# vim-dadbod-manager
+# vim-dadbod-manager-ui
 
 Turn a [vim-dadbod-ui](https://github.com/tpope/vim-dadbod-ui) connection into a
 **server → databases → tables** tree, the way DBeaver and DataGrip show a database
