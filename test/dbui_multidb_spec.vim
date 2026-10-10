@@ -534,20 +534,20 @@ function! s:test_backups_section() abort
   let section = s:index_of(lines, '^    \S* Backups (2)$')
   call s:ok(section > -1, 'an expanded database appends its Backups section with the file count')
 
-  " Expand the section: files newest first, then the action that creates one.
+  " Expand the section: the action that creates one first, then files newest first.
   call cursor(section + 1, 1)
   call drawer.toggle_line('')
   let lines = getline(1, '$')
   let section = s:index_of(lines, '^    \S* Backups (2)$')
-  call s:eq(lines[section + 1], '      backup-2024-02-02-09-00-00', 'the newest backup is listed first')
-  call s:eq(lines[section + 2], '      backup-2024-01-01-12-00-00', 'every backup file is listed')
-  call s:eq(lines[section + 3], '      ' . g:db_ui_icons.new_query . ' New backup',
-        \ 'the section ends with the New backup action')
+  call s:eq(lines[section + 1], '      ' . g:db_ui_icons.new_query . ' New backup',
+        \ 'the section starts with the New backup action')
+  call s:eq(lines[section + 2], '      backup-2024-02-02-09-00-00', 'the newest backup is listed first')
+  call s:eq(lines[section + 3], '      backup-2024-01-01-12-00-00', 'every backup file is listed')
   call s:ok(s:index_of(lines, 'beta-') < 0, 'a foreign file is not listed')
 
   " <CR> on New backup reaches the planner: fakedb has no built-in command, so
   " the user gets an explanation and the runner is never handed a plan.
-  call cursor(section + 4, 1)
+  call cursor(section + 2, 1)
   call drawer.toggle_line('')
   call s:eq(len(g:dbui_multidb_test_backup_plans), 0, 'a failed plan never reaches the runner')
   call s:eq(len(s:notifications), 1, 'the failed plan reports exactly once')
@@ -556,7 +556,7 @@ function! s:test_backups_section() abort
 
   " A configured command turns the same action into a recorded plan.
   let g:dbui_multidb_backup_commands = {'fakedb': ['echo', '{name}', '{output}']}
-  call cursor(section + 4, 1)
+  call cursor(section + 2, 1)
   call drawer.toggle_line('')
   call s:eq(len(g:dbui_multidb_test_backup_plans), 1, 'a configured command reaches the runner')
   call s:eq(g:dbui_multidb_test_backup_plans[0].verb, 'Backup', 'the recorded plan is a backup')
@@ -573,7 +573,7 @@ function! s:test_backups_section() abort
   function! dbui_multidb#backup#confirm(question) abort
     return 0
   endfunction
-  call cursor(section + 3, 1)
+  call cursor(section + 4, 1)
   call drawer.delete_line()
   call s:eq(filereadable(older), 1, 'a declined delete leaves the file')
 
@@ -581,7 +581,7 @@ function! s:test_backups_section() abort
   function! dbui_multidb#backup#confirm(question) abort
     return 1
   endfunction
-  call cursor(section + 3, 1)
+  call cursor(section + 4, 1)
   call drawer.delete_line()
   call s:eq(filereadable(older), 0, 'd deletes the backup file after confirmation')
   let lines = getline(1, '$')

@@ -108,6 +108,8 @@ function! dbui_multidb#administrative#append(drawer, db) abort
     return 1
   endif
 
+  call a:drawer.add('New backup', 'call_method', s:new_type,
+        \ dbui_multidb#administrative#new_icon(), a:db.key_name, 2)
   for entry in entries
     call a:drawer.add(entry.label, 'call_method', s:file_type, '',
           \ a:db.key_name, 2, {
@@ -115,8 +117,6 @@ function! dbui_multidb#administrative#append(drawer, db) abort
           \   'dbui_backup_prefix': entry.prefix,
           \   'dbui_backup_label': entry.label})
   endfor
-  call a:drawer.add('New backup', 'call_method', s:new_type,
-        \ dbui_multidb#administrative#new_icon(), a:db.key_name, 2)
   return 1
 endfunction
 
