@@ -163,7 +163,10 @@ function! dbui_multidb#refresh(...) abort
   endif
 
   if drawer.is_opened()
-    call drawer.redraw()
+    " A plain re-render re-discovers only what was invalidated above: redraw()
+    " would invalidate every server again, which is not what a targeted refresh
+    " asks for.
+    call drawer.render({'queries': 1})
   endif
 
   return 1

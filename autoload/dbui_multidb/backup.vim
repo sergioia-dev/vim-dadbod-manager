@@ -498,7 +498,7 @@ endfunction
 " explicitly; a bare path falls back to the text before the timestamp the
 " planner generates.
 function! s:rename_prefix(name) abort
-  let match = matchlist(a:name, '^\(.\{-}-\)\d\{8\}-\d\{6\}')
+  let match = matchlist(a:name, '^\(.\{-}-\)backup-\d\{4\}-\d\{2\}-\d\{2\}-\d\{2\}-\d\{2\}-\d\{2\}')
   return empty(match) ? '' : match[1]
 endfunction
 
@@ -859,7 +859,7 @@ function! s:context(db, cfg) abort
   let schemes = s:schemes(a:db)
   let dir = s:dirname(a:cfg)
   let dbname = dbui_multidb#backup#dbname(a:db)
-  let timestamp = strftime('%Y%m%d-%H%M%S')
+  let timestamp = 'backup-' . strftime('%Y-%m-%d-%H-%M-%S')
   let name = printf('%s-%s', s:slug(dbname), timestamp)
   let parsed = s:parse(url)
   return {

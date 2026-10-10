@@ -9,7 +9,10 @@
 "   * toggle_db   triggers discovery when a server node is expanded
 "   * populate    skips discovery for server nodes (they are containers, not
 "                 connections)
-"   * render      drops the cached discoveries on a redraw
+"   * render      drops the cached discoveries when its opts ask for dbs
+"   * redraw      drops the cached discoveries from any cursor position, so R
+"                 re-queries every expanded server rather than only the
+"                 tables of the node under the cursor
 "
 " The originals are kept on the instance under "dbui_multidb_orig_*" so the
 " patch stays a thin wrapper over upstream behaviour.
@@ -19,7 +22,7 @@
 " stored on a dict does not (E121).
 
 function! dbui_multidb#patch#methods() abort
-  return ['add_db', 'toggle_db', 'populate', 'render', 'delete_line', 'rename_line']
+  return ['add_db', 'toggle_db', 'populate', 'render', 'delete_line', 'rename_line', 'redraw']
 endfunction
 
 " Methods that must exist for the patch to be applicable.
@@ -164,6 +167,17 @@ function! dbui_multidb#patch#render(...) abort dict
     return self.dbui_multidb_orig_render(a:1)
   endif
   return self.dbui_multidb_orig_render()
+endfunction
+
+" R must re-discover the database list behind every expanded server, not just
+" re-populate tables: it is the user asking for up-to-date contents. Upstream's
+" redraw() is cursor-dependent, and the render it picks for a database or table
+" node looks the entry up in dbui.dbs by key, which invalidate() has just
+" removed (E716). Refresh the whole drawer instead, exactly like R on a server
+" node, so the outcome no longer depends on where the cursor happens to be.
+function! dbui_multidb#patch#redraw() abort dict
+  call dbui_multidb#discover#invalidate(self)
+  return self.render({'dbs': 1, 'queries': 1})
 endfunction
 
 " d on a backup file entry deletes the file; any other line keeps upstream

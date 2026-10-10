@@ -197,7 +197,7 @@ connection URL, which carries the credentials, and the displayed command is reda
     ▸ Saved queries (0)
     ▸ Tables (128)
     ▾ Backups (1)
-        20240101-120000
+        backup-2024-01-01-12-00-00
         + New backup
 ```
 
@@ -219,7 +219,8 @@ The command for each scheme, and where the dump lands:
 | `clickhouse` | `clickhouse-client -q "BACKUP DATABASE … TO Disk(…)"` | **server** (`…_server_dirs.clickhouse` = disk name) |
 | `oracle` | `expdp` | **server** (`…_server_dirs.oracle` = Oracle `DIRECTORY` object) |
 
-Files are named `<database>-<timestamp>.<ext>` under the destination; an existing file
+Files are named `<database>-backup-YYYY-MM-DD-HH-MM-SS.<ext>` under the destination (the
+listed label is `backup-YYYY-MM-DD-HH-MM-SS`); an existing file
 is never overwritten (a `-1`, `-2`, … suffix is appended instead).
 
 The section appears only for client-side schemes — `postgresql`, `mysql`/`mariadb`,
@@ -288,12 +289,14 @@ This plugin's own commands:
 
 | Command | Description |
 | --- | --- |
-| `:DBManagerRefresh` | Drop the cached discoveries and redraw. Every server is queried again on its next expansion. |
+| `:DBManagerRefresh` | Drop the cached discoveries and re-render. Every server is queried again on its next expansion. |
 | `:DBManagerRefresh <server>` | Same for one server, by connection name or key (tab-completed). A still-expanded server is re-queried immediately. |
 | `:DBManagerInfo` | Print the effective configuration, whether the drawer is patched, and the discovery state (`not discovered yet`, the error, or `N database(s): …`) of every server. |
 
 The usual drawer keymaps work unchanged: `o`/`<CR>` in a server node expands it and
-runs the discovery, `R` on it re-queries the whole drawer.
+runs the discovery. `R` re-queries the whole drawer wherever the cursor is: every
+expanded server's database list is re-discovered, not only the tables of the node
+under the cursor.
 
 One `:DBUI*` name survives, and it is not an entry point: the vendored notification
 module defines `:DBUIHideNotifications` itself, from an autoload file, the first time
@@ -307,7 +310,7 @@ points; the help file is vendored text and is kept byte-identical.
 
 - **The drawer is extended, not forked.** vim-dadbod-ui's drawer is a dict whose
   methods are Funcrefs, so `db_ui#drawer#get()` is patched from the outside:
-  `add_db`, `toggle_db`, `populate` and `render` are wrapped on the live instance
+  `add_db`, `toggle_db`, `populate`, `render` and `redraw` are wrapped on the live
   (the originals stay available as `dbui_multidb_orig_*`), and `add` and
   `get_toggle_icon` are left untouched. No vendored file is edited: they are byte
   for byte the files vim-dadbod-ui publishes (see [Vendored code](#vendored-code)).
@@ -329,12 +332,13 @@ points; the help file is vendored text and is kept byte-identical.
   and the connections file. Nothing this plugin discovers can therefore leak into
   `g:dbs`, be written back to disk, or survive as a stale entry after a redraw.
 - **Discovery is synchronous and cached** in the master's own dict under
-  `dbui_multidb_children`, so a re-render (`BufEnter`, `o`, `R`) never touches the
-  network again. The cache is dropped on `render({'dbs': 1})` — i.e. `R`, the
-  refresh command, and vim-dadbod-ui's own "Refreshing all databases" — while a
-  plain `render()` (moving between windows) leaves the tree and its expansion state
-  intact. An expansion that follows a failed discovery retries, because a failure is
-  usually a server that was not reachable a minute ago.
+  `dbui_multidb_children`, so a plain re-render (`BufEnter`, moving between windows)
+  never touches the network again and leaves the tree and its expansion state intact.
+  The cache is dropped by `R` — through the `redraw` patch, from any cursor position
+  — by `:DBManagerRefresh`, and by vim-dadbod-ui's own "Refreshing all databases"
+  (`render({'dbs': 1})`); the next render then re-queries every expanded server. An
+  expansion that follows a failed discovery retries, because a failure is usually a
+  server that was not reachable a minute ago.
 - **Hierarchy.** A child is added as `key_name = '<master key>::<database>'` with
   `source = 'master'`, `is_child = 1` and `master_key_name` pointing at its server.
   Its dict carries the same keys as a normal entry (a child is built by the same code

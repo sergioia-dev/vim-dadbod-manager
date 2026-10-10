@@ -329,6 +329,13 @@ function! s:test_drawer() abort
   call s:eq(len(g:dbui_multidb_test_calls), 3, 'refreshing a server rediscovers')
   call s:eq(len(getline(1, '$')), base, 'the tree is rebuilt after a refresh')
 
+  " R on a discovered database node must re-discover the server, not just
+  " repopulate that database's tables: the cursor must not decide the outcome.
+  call cursor(s:index_of(getline(1, '$'), 'alpha$') + 1, 1)
+  call drawer.redraw()
+  call s:eq(len(g:dbui_multidb_test_calls), 4, 'R on a database node rediscovers its server')
+  call s:eq(len(getline(1, '$')), base, 'the tree is rebuilt after R on a database node')
+
   let info = dbui_multidb#info()
   call s:ok(s:index_of(info, 'Server: 2 database(s): alpha, beta') > -1, 'info reports the databases')
   call s:ok(s:index_of(info, 'patch:.*installed') > -1, 'info reports the patch state')
@@ -503,11 +510,11 @@ function! s:test_backups_section() abort
 
   " Two backups owned by alpha, one foreign file that must be ignored.
   call mkdir(g:dbui_multidb_backup_dir, 'p')
-  let older = g:dbui_multidb_backup_dir . '/alpha-20240101-120000.sqlite3'
-  let newer = g:dbui_multidb_backup_dir . '/alpha-20240202-090000.sqlite3'
+  let older = g:dbui_multidb_backup_dir . '/alpha-backup-2024-01-01-12-00-00.sqlite3'
+  let newer = g:dbui_multidb_backup_dir . '/alpha-backup-2024-02-02-09-00-00.sqlite3'
   call writefile([], older)
   call writefile([], newer)
-  call writefile([], g:dbui_multidb_backup_dir . '/beta-20240101-000000.sqlite3')
+  call writefile([], g:dbui_multidb_backup_dir . '/beta-backup-2024-01-01-00-00-00.sqlite3')
 
   call s:begin_capture()
   DBManager
@@ -532,8 +539,8 @@ function! s:test_backups_section() abort
   call drawer.toggle_line('')
   let lines = getline(1, '$')
   let section = s:index_of(lines, '^    \S* Backups (2)$')
-  call s:eq(lines[section + 1], '      20240202-090000', 'the newest backup is listed first')
-  call s:eq(lines[section + 2], '      20240101-120000', 'every backup file is listed')
+  call s:eq(lines[section + 1], '      backup-2024-02-02-09-00-00', 'the newest backup is listed first')
+  call s:eq(lines[section + 2], '      backup-2024-01-01-12-00-00', 'every backup file is listed')
   call s:eq(lines[section + 3], '      ' . g:db_ui_icons.new_query . ' New backup',
         \ 'the section ends with the New backup action')
   call s:ok(s:index_of(lines, 'beta-') < 0, 'a foreign file is not listed')
@@ -578,13 +585,13 @@ function! s:test_backups_section() abort
   call drawer.delete_line()
   call s:eq(filereadable(older), 0, 'd deletes the backup file after confirmation')
   let lines = getline(1, '$')
-  call s:ok(s:index_of(lines, '20240101-120000') < 0, 'the deleted file leaves the section')
+  call s:ok(s:index_of(lines, 'backup-2024-01-01-12-00-00') < 0, 'the deleted file leaves the section')
 
   " r on a file entry renames it (input is stubbed), keeping prefix and ext.
   function! db_ui#utils#input(name, default) abort
     return 'kept'
   endfunction
-  call cursor(s:index_of(lines, '20240202-090000$') + 1, 1)
+  call cursor(s:index_of(lines, 'backup-2024-02-02-09-00-00$') + 1, 1)
   call drawer.rename_line()
   call s:eq(filereadable(newer), 0, 'r renames the backup file away from its old name')
   call s:ok(filereadable(g:dbui_multidb_backup_dir . '/alpha-kept.sqlite3'),
@@ -615,15 +622,17 @@ function! s:test_backup_files() abort
 
   " list(): owned files only, newest first, label/prefix/ext parsed.
   call mkdir(g:dbui_multidb_backup_dir, 'p')
-  let f_old = g:dbui_multidb_backup_dir . '/alpha-20240101-120000.archive.gz'
-  let f_new = g:dbui_multidb_backup_dir . '/alpha-20240202-090000.archive.gz'
+  let f_old = g:dbui_multidb_backup_dir . '/alpha-backup-2024-01-01-12-00-00.archive.gz'
+  let f_new = g:dbui_multidb_backup_dir . '/alpha-backup-2024-02-02-09-00-00.archive.gz'
   call writefile([], f_old)
   call writefile([], f_new)
-  call writefile([], g:dbui_multidb_backup_dir . '/beta-20240101-000000.sqlite3')
-  call writefile([], g:dbui_multidb_backup_dir . '/alpha-20240101-120000.log')
+  call writefile([], g:dbui_multidb_backup_dir . '/beta-backup-2024-01-01-00-00-00.sqlite3')
+  call writefile([], g:dbui_multidb_backup_dir . '/alpha-backup-2024-01-01-12-00-00.log')
   let entries = dbui_multidb#backup#list({'url': 'mongodb://u@h/alpha', 'name': 'alpha'})
-  call s:eq(map(copy(entries), 'v:val.label'), ['20240202-090000', '20240101-120000'],
+  call s:eq(map(copy(entries), 'v:val.label'), ['backup-2024-02-02-09-00-00', 'backup-2024-01-01-12-00-00'],
         \ 'list returns owned backups, newest first, without logs or foreign files')
+  call s:eq(map(copy(entries), 'v:val.label =~# ''^backup-\d\{4\}-\d\{2\}-\d\{2\}-\d\{2\}-\d\{2\}-\d\{2\}$'''), [1, 1],
+        \ 'list labels use the backup-YYYY-MM-DD-HH-MM-SS shape')
   call s:eq(entries[0].prefix, 'alpha-', 'list reports the connection prefix')
   call s:eq(entries[0].ext, '.archive.gz', 'list strips the longest known extension')
 
@@ -667,7 +676,7 @@ function! s:test_backup_files() abort
   runtime autoload/dbui_multidb/backup.vim
 
   " delete_file refuses a foreign file before asking, then asks for an owned one.
-  call s:eq(dbui_multidb#backup#delete_file({'url': 'mongodb://u@h/alpha', 'name': 'alpha'}, g:dbui_multidb_backup_dir . '/beta-20240101-000000.sqlite3'), 0,
+  call s:eq(dbui_multidb#backup#delete_file({'url': 'mongodb://u@h/alpha', 'name': 'alpha'}, g:dbui_multidb_backup_dir . '/beta-backup-2024-01-01-00-00-00.sqlite3'), 0,
         \ 'a foreign file is refused')
   function! dbui_multidb#backup#confirm(question) abort
     return 0
@@ -681,13 +690,13 @@ function! s:test_backup_files() abort
   call s:eq(dbui_multidb#backup#delete_file({'url': 'mongodb://u@h/alpha', 'name': 'alpha'}, f_old), 1,
         \ 'an owned file is deleted after confirmation')
   call s:eq(filereadable(f_old), 0, 'the file is gone')
-  call s:eq(filereadable(g:dbui_multidb_backup_dir . '/alpha-20240101-120000.log'), 0, 'the log next to it is gone')
+  call s:eq(filereadable(g:dbui_multidb_backup_dir . '/alpha-backup-2024-01-01-12-00-00.log'), 0, 'the log next to it is gone')
 
   " rename_file sanitises the label, keeps the extension, and refuses a clash.
   call s:eq(dbui_multidb#backup#rename_file(f_new, 'kept', 'alpha-'), 1, 'rename succeeds')
   let renamed = g:dbui_multidb_backup_dir . '/alpha-kept.archive.gz'
   call s:ok(filereadable(renamed), 'the extension is kept')
-  let third = g:dbui_multidb_backup_dir . '/alpha-20240303-000000.archive.gz'
+  let third = g:dbui_multidb_backup_dir . '/alpha-backup-2024-03-03-00-00-00.archive.gz'
   call writefile([], third)
   call s:eq(dbui_multidb#backup#rename_file(third, 'kept', 'alpha-'), 0, 'rename refuses an existing target')
   runtime autoload/dbui_multidb/backup.vim
@@ -703,6 +712,10 @@ function! s:test_backup_plan() abort
   let pg = {'url': 'postgresql://user:s3cr3tpw@db.example.com:5432/app', 'name': 'app'}
   let plan = dbui_multidb#backup#plan(pg)
   call s:eq(plan.ok, 1, 'postgresql plans successfully')
+  call s:ok(plan.name =~# '-backup-\d\{4\}-\d\{2\}-\d\{2\}-\d\{2\}-\d\{2\}-\d\{2\}$',
+        \ 'a backup plan names its file <database>-backup-YYYY-MM-DD-HH-MM-SS')
+  call s:ok(plan.timestamp =~# '^backup-\d\{4\}-\d\{2\}-\d\{2\}-\d\{2\}-\d\{2\}-\d\{2\}$',
+        \ 'a backup plan timestamp is the backup-YYYY-MM-DD-HH-MM-SS label')
   call s:eq(plan.scheme, 'postgresql', 'postgresql is canonical')
   call s:eq(plan.argv[0], 'pg_dump', 'postgresql uses pg_dump')
   call s:ok(index(plan.argv, '--file') >= 0, 'postgresql writes a file')
