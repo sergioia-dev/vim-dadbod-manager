@@ -81,12 +81,57 @@ function! dbui_multidb#administrative#backup_item(drawer) abort
   return item
 endfunction
 
+" The items of one database's section, in the exact shape s:drawer.add()
+" stores: the "Backups (N)" toggle at base_level, and, when the section is
+" expanded, "New backup" and every backup file one level below it. Pure: it
+" neither touches the drawer nor the buffer, so a render and an in-place
+" refresh build the section the same way.
+function! dbui_multidb#administrative#section_items(db, base_level) abort
+  let state = dbui_multidb#administrative#state(a:db)
+  let entries = dbui_multidb#backup#list(a:db)
+  let items = [{
+        \ 'label': printf('Backups (%d)', len(entries)),
+        \ 'action': 'toggle',
+        \ 'type': s:type,
+        \ 'icon': dbui_multidb#administrative#icon(state.expanded),
+        \ 'dbui_db_key_name': a:db.key_name,
+        \ 'level': a:base_level,
+        \ 'expanded': state.expanded,
+        \ }]
+  if !state.expanded
+    return items
+  endif
+
+  call add(items, {
+        \ 'label': 'New backup',
+        \ 'action': 'call_method',
+        \ 'type': s:new_type,
+        \ 'icon': dbui_multidb#administrative#new_icon(),
+        \ 'dbui_db_key_name': a:db.key_name,
+        \ 'level': a:base_level + 1,
+        \ })
+  for entry in entries
+    call add(items, {
+          \ 'label': entry.label,
+          \ 'action': 'call_method',
+          \ 'type': s:file_type,
+          \ 'icon': '',
+          \ 'dbui_db_key_name': a:db.key_name,
+          \ 'level': a:base_level + 1,
+          \ 'dbui_backup_file': entry.path,
+          \ 'dbui_backup_prefix': entry.prefix,
+          \ 'dbui_backup_label': entry.label,
+          \ })
+  endfor
+  return items
+endfunction
+
 " Append the section to a database the drawer just drew. Called by the add_db
 " patch, so a:db is the real entry from drawer.dbui.dbs and the returned state
 " survives a re-render. Returns 1 when the section was added, 0 when the
 " configuration or the scheme turns it off, or the database is collapsed.
 function! dbui_multidb#administrative#append(drawer, db) abort
-  let state = dbui_multidb#administrative#state(a:db)
+  call dbui_multidb#administrative#state(a:db)
   if empty(get(dbui_multidb#config#get(), 'backup_section', 1))
     return 0
   endif
@@ -100,23 +145,68 @@ function! dbui_multidb#administrative#append(drawer, db) abort
     return 0
   endif
 
-  let entries = dbui_multidb#backup#list(a:db)
-  call a:drawer.add(printf('Backups (%d)', len(entries)), 'toggle', s:type,
-        \ dbui_multidb#administrative#icon(state.expanded),
-        \ a:db.key_name, 1, {'expanded': state.expanded})
-  if !state.expanded
-    return 1
+  call extend(a:drawer.content, dbui_multidb#administrative#section_items(a:db, 1))
+  return 1
+endfunction
+
+" Rewrite one database's section inside a drawer that has already been drawn:
+" remove the old toggle and its subtree, insert the rebuilt items at the same
+" position, then repaint the buffer. The rest of the tree is left exactly as it
+" is, so no other node is re-toggled, re-discovered or collapsed. Returns 0
+" when the database has no section in the drawer (it is collapsed, or this is
+" not the drawer the section was appended to).
+function! dbui_multidb#administrative#replace_section(drawer, db) abort
+  let content = a:drawer.content
+  let index = -1
+  let level = 0
+  let i = 0
+  while i < len(content)
+    let item = content[i]
+    if get(item, 'type', '') ==# s:type && get(item, 'dbui_db_key_name', '') ==# a:db.key_name
+      let index = i
+      let level = item.level
+      break
+    endif
+    let i += 1
+  endwhile
+  if index < 0
+    return 0
   endif
 
-  call a:drawer.add('New backup', 'call_method', s:new_type,
-        \ dbui_multidb#administrative#new_icon(), a:db.key_name, 2)
-  for entry in entries
-    call a:drawer.add(entry.label, 'call_method', s:file_type, '',
-          \ a:db.key_name, 2, {
-          \   'dbui_backup_file': entry.path,
-          \   'dbui_backup_prefix': entry.prefix,
-          \   'dbui_backup_label': entry.label})
-  endfor
+  " The subtree: every following item deeper than the toggle, up to the next
+  " item at the toggle's level or above.
+  let last = index + 1
+  while last < len(content) && content[last].level > level
+    let last += 1
+  endwhile
+
+  call remove(content, index, last - 1)
+  call extend(content, dbui_multidb#administrative#section_items(a:db, level), index)
+  call dbui_multidb#administrative#repaint(a:drawer)
+  return 1
+endfunction
+
+" Rebuild the drawer buffer from its content exactly like render() does,
+" without rebuilding the content itself. Used after replace_section(): the new
+" items have to be shown, but the tree must stay as it is. Returns 0 when the
+" drawer is not open.
+function! dbui_multidb#administrative#repaint(drawer) abort
+  let restore_win = a:drawer.focus()
+  if &filetype !=? 'dbui'
+    return 0
+  endif
+
+  let view = winsaveview()
+  let lines = map(copy(a:drawer.content), 'repeat(" ", shiftwidth() * v:val.level).v:val.icon.(!empty(v:val.icon) ? " " : "").v:val.label')
+  setlocal modifiable
+  silent 1,$delete _
+  call setline(1, lines)
+  setlocal nomodifiable
+  call winrestview(view)
+
+  if restore_win
+    wincmd p
+  endif
   return 1
 endfunction
 

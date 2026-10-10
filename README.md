@@ -189,16 +189,20 @@ the backup files that connection owns (newest first) and a **New backup** action
 into the database it came from and `d` deletes it — both ask for confirmation first — and `r` renames
 it. A backup or restore is a detached job: the editor is never blocked, and a
 notification reports when it starts and again when it finishes (or fails, with the log
-to read). Passwords never reach a notification: the command is built from the
-connection URL, which carries the credentials, and the displayed command is redacted.
+to read). When a local backup finishes, only that database's **Backups** section is
+rewritten in place — the new file appears and the count grows — so the rest of the
+tree, the cursor and the view are left as they were; a restore, or a server-side
+dump, changes no local listing and leaves the drawer alone. Passwords never reach a
+notification: the command is built from the connection URL, which carries the
+credentials, and the displayed command is redacted.
 
 ```
 ▾ app
     ▸ Saved queries (0)
     ▸ Tables (128)
     ▾ Backups (1)
-        backup-2024-01-01-12-00-00
         + New backup
+        backup-2024-01-01-12-00-00
 ```
 
 The Backups section reuses the `tables` toggle icon, and the **New backup** leaf uses

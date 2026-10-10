@@ -110,6 +110,28 @@ function! dbui_multidb#backup#start(db) abort
   return s:run(dbui_multidb#backup#plan(a:db))
 endfunction
 
+" Refresh the Backups section of a finished backup's connection in place, so the
+" new file shows up without redrawing the whole drawer. Returns 1 when the
+" section was rewritten, 0 when the plan carries no connection, the drawer is
+" closed, or this database has no section in it.
+function! dbui_multidb#backup#refresh_section(plan, ...) abort
+  let db = get(a:plan, 'db', {})
+  if type(db) !=# type({}) || empty(db)
+    return 0
+  endif
+
+  try
+    let drawer = db_ui#drawer#get()
+  catch /.*/
+    return 0
+  endtry
+  if type(drawer) !=# type({}) || !has_key(drawer, 'is_opened') || !drawer.is_opened()
+    return 0
+  endif
+
+  return dbui_multidb#administrative#replace_section(drawer, db)
+endfunction
+
 " Report why a plan cannot run. A scheme that has no command on this machine
 " is not a failure: the message says so and nothing was attempted.
 function! s:report(plan) abort
@@ -801,6 +823,13 @@ function! s:finish(plan, code) abort
   let label = s:target_label(a:plan) . s:remote_hint(a:plan)
   if a:code == 0
     call dbui_multidb#notify#info(s:verb(a:plan) . ' finished: ' . label)
+    " The listing of a finished backup changed: refresh just that section
+    " instead of redrawing the whole drawer. Deferred out of the job callback
+    " with a zero-delay timer. A restore or a server-side dump changes no
+    " local listing, so only a local backup schedules the refresh.
+    if get(a:plan, 'local', 1) && get(a:plan, 'verb', 'Backup') ==# 'Backup'
+      call timer_start(0, function('dbui_multidb#backup#refresh_section', [a:plan]))
+    endif
   else
     call dbui_multidb#notify#warning(printf(
           \ '%s failed (exit %d): %s. See %s.',
@@ -863,7 +892,7 @@ function! s:context(db, cfg) abort
   let name = printf('%s-%s', s:slug(dbname), timestamp)
   let parsed = s:parse(url)
   return {
-        \ 'cfg': a:cfg, 'url': url, 'parsed': parsed,
+        \ 'cfg': a:cfg, 'url': url, 'parsed': parsed, 'db': a:db,
         \ 'raw': schemes.raw, 'scheme': schemes.scheme,
         \ 'dbname': dbname, 'dir': dir, 'timestamp': timestamp,
         \ 'name': name, 'log': dir . '/' . name . '.log',
@@ -874,6 +903,7 @@ endfunction
 function! s:plan(ctx, overrides) abort
   let plan = {
         \ 'ok': 1,
+        \ 'db': a:ctx.db,
         \ 'kind': 'client_file',
         \ 'scheme': a:ctx.scheme,
         \ 'raw_scheme': a:ctx.raw,

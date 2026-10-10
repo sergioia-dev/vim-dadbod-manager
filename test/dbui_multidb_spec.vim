@@ -597,6 +597,53 @@ function! s:test_backups_section() abort
   call s:ok(filereadable(g:dbui_multidb_backup_dir . '/alpha-kept.sqlite3'),
         \ 'the renamed file keeps its prefix and extension')
 
+  " A finished backup adds its file in place: refresh_section() rewrites only
+  " that section, leaving the rest of the tree and the cached discovery alone.
+  let lines = getline(1, '$')
+  let section = s:index_of(lines, '^    \S* Backups (1)$')
+  call s:ok(section > -1, 'the section survives the rename with one file')
+  let calls = len(g:dbui_multidb_test_calls)
+  let refreshed = g:dbui_multidb_backup_dir . '/alpha-backup-2024-03-03-10-00-00.sqlite3'
+  call writefile([], refreshed)
+  let alpha = drawer.dbui.dbs['Server_g:dbs::alpha']
+  call s:eq(dbui_multidb#backup#refresh_section({'db': alpha, 'local': 1}), 1,
+        \ 'a finished local backup refreshes its section')
+  let lines = getline(1, '$')
+  let section = s:index_of(lines, '^    \S* Backups (2)$')
+  call s:ok(section > -1, 'the in-place refresh bumps the file count')
+  call s:eq(lines[section + 1], '      ' . g:db_ui_icons.new_query . ' New backup',
+        \ 'the refresh keeps the New backup action first')
+  call s:ok(s:index_of(lines, '^      kept$') > -1, 'the refresh keeps the existing file')
+  call s:ok(s:index_of(lines, '^      backup-2024-03-03-10-00-00$') > -1, 'the refresh lists the new file')
+  call s:ok(s:index_of(lines, '^  " Databases (2)$') > -1, 'the refresh leaves the server node alone')
+  call s:ok(s:index_of(lines, 'Tables (1)') > -1, 'the refresh leaves the database node alone')
+  call s:eq(len(g:dbui_multidb_test_calls), calls, 'the refresh re-discovers nothing')
+  call s:eq(dbui_multidb#backup#refresh_section({'db': {'key_name': 'nope'}, 'local': 1}), 0,
+        \ 'a database with no section reports that there was nothing to refresh')
+
+  " The same refresh runs from the job exit path, deferred by a zero-delay
+  " timer so it never runs inside the job callback.
+  let scheduled = g:dbui_multidb_backup_dir . '/alpha-backup-2024-04-04-11-00-00.sqlite3'
+  call writefile([], scheduled)
+  call dbui_multidb#backup#on_exit({
+        \ 'db': alpha, 'local': 1, 'target': scheduled,
+        \ 'log': g:dbui_multidb_backup_dir . '/scheduled.log', 'verb': 'Backup'}, 0, 0, 'exit')
+  sleep 100m
+  let lines = getline(1, '$')
+  call s:ok(s:index_of(lines, '^    \S* Backups (3)$') > -1, 'a finished backup refreshes its section on job exit')
+  call s:ok(s:index_of(lines, 'backup-2024-04-04-11-00-00') > -1, 'the finished backup appears in the section')
+
+  " A successful restore changes no local listing, so it schedules nothing.
+  let restored = g:dbui_multidb_backup_dir . '/alpha-backup-2024-05-05-12-00-00.sqlite3'
+  call writefile([], restored)
+  call dbui_multidb#backup#on_exit({
+        \ 'db': alpha, 'local': 1, 'verb': 'Restore', 'target': restored,
+        \ 'log': g:dbui_multidb_backup_dir . '/restore.log'}, 0, 0, 'exit')
+  sleep 100m
+  let lines = getline(1, '$')
+  call s:ok(s:index_of(lines, '^    \S* Backups (3)$') > -1, 'a finished restore leaves the section alone')
+  call s:ok(s:index_of(lines, 'backup-2024-05-05-12-00-00') < 0, 'a finished restore does not add a listing')
+
   runtime autoload/dbui_multidb/backup.vim
   runtime autoload/db_ui/utils.vim
   call s:end_capture()
