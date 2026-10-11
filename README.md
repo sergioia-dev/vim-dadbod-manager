@@ -1,4 +1,4 @@
-# vim-dadbod-manager
+# vim-dadbod-manager-ui
 
 Turn a [vim-dadbod-ui](https://github.com/tpope/vim-dadbod-ui) connection into a
 **server → databases → tables** tree, the way DBeaver and DataGrip show a database
@@ -58,7 +58,7 @@ file, a Redis URL), stays a plain connection and behaves exactly as before.
 
 ```lua
 {
-	"sergioia-dev/vim-dadbod-manager",
+	"sergioia-dev/vim-dadbod-manager-ui",
 	dependencies = { "tpope/vim-dadbod" },
 	-- `opts` is passed to vim.g / setup(); see [USAGE.md](USAGE.md).
 	-- Server nodes are detected from the connection URL; set
@@ -71,7 +71,7 @@ file, a Redis URL), stays a plain connection and behaves exactly as before.
 ```vim
 call plug#begin()
 Plug 'tpope/vim-dadbod'
-Plug 'sergioia-dev/vim-dadbod-manager'
+Plug 'sergioia-dev/vim-dadbod-manager-ui'
 call plug#end()
 
 " Optional: name the server connections by hand instead of auto-detecting them.
@@ -96,7 +96,7 @@ vim-dadbod-manager = pkgs.vimUtils.buildVimPlugin {
   version = "0.1.0";
   src = pkgs.fetchFromGitHub {
     owner = "sergioia-dev";
-    repo = "vim-dadbod-manager";
+    repo = "vim-dadbod-manager-ui";
     rev = "<commit>";
     hash = "sha256-...";
   };
