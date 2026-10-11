@@ -132,6 +132,29 @@ function! dbui_multidb#backup#refresh_section(plan, ...) abort
   return dbui_multidb#administrative#replace_section(drawer, db)
 endfunction
 
+" Refresh a restored database in place: a restore changed that database's
+" contents, so its Schemas/Tables section is re-queried and its subtree
+" re-rendered, while the rest of the drawer stays exactly as it is. Returns 1
+" when the subtree was rewritten, 0 when the plan carries no connection, the
+" drawer is closed, or this database is not in it.
+function! dbui_multidb#backup#refresh_database(plan, ...) abort
+  let db = get(a:plan, 'db', {})
+  if type(db) !=# type({}) || empty(db)
+    return 0
+  endif
+
+  try
+    let drawer = db_ui#drawer#get()
+  catch /.*/
+    return 0
+  endtry
+  if type(drawer) !=# type({}) || !has_key(drawer, 'is_opened') || !drawer.is_opened()
+    return 0
+  endif
+
+  return dbui_multidb#administrative#replace_database(drawer, db)
+endfunction
+
 " Report why a plan cannot run. A scheme that has no command on this machine
 " is not a failure: the message says so and nothing was attempted.
 function! s:report(plan) abort
@@ -823,11 +846,13 @@ function! s:finish(plan, code) abort
   let label = s:target_label(a:plan) . s:remote_hint(a:plan)
   if a:code == 0
     call dbui_multidb#notify#info(s:verb(a:plan) . ' finished: ' . label)
-    " The listing of a finished backup changed: refresh just that section
-    " instead of redrawing the whole drawer. Deferred out of the job callback
-    " with a zero-delay timer. A restore or a server-side dump changes no
-    " local listing, so only a local backup schedules the refresh.
-    if get(a:plan, 'local', 1) && get(a:plan, 'verb', 'Backup') ==# 'Backup'
+    " A restore changed the database's contents: re-query it and rewrite only
+    " its subtree. A finished backup changed the local listing: refresh only its
+    " section. Both are deferred out of the job callback with a zero-delay timer
+    " so nothing runs inside the job exit.
+    if get(a:plan, 'verb', 'Backup') ==# 'Restore'
+      call timer_start(0, function('dbui_multidb#backup#refresh_database', [a:plan]))
+    elseif get(a:plan, 'local', 1)
       call timer_start(0, function('dbui_multidb#backup#refresh_section', [a:plan]))
     endif
   else

@@ -186,6 +186,73 @@ function! dbui_multidb#administrative#replace_section(drawer, db) abort
   return 1
 endfunction
 
+" Rebuild one database's whole subtree inside a drawer that has already been
+" drawn: re-query that database (its schemas or its tables), re-render it
+" exactly like a normal draw, and swap the fresh subtree in at the database's
+" own position. The rest of the tree is left as it is, so no other node is
+" re-toggled, re-discovered or collapsed. Returns 0 when the database is not in
+" the drawer.
+"
+" This is the restore counterpart of replace_section(): a restore changes the
+" database's contents, so its Schemas/Tables section has to be re-queried, but
+" the drawer must not collapse around it. Re-using the vendored add_db renderer
+" keeps the result byte-identical to a normal draw.
+function! dbui_multidb#administrative#replace_database(drawer, db) abort
+  let content = a:drawer.content
+  let index = -1
+  let level = 0
+  let i = 0
+  while i < len(content)
+    let item = content[i]
+    if get(item, 'type', '') ==# 'db' && get(item, 'dbui_db_key_name', '') ==# a:db.key_name
+      let index = i
+      let level = item.level
+      break
+    endif
+    let i += 1
+  endwhile
+  if index < 0
+    return 0
+  endif
+
+  " The subtree: every following item deeper than the toggle, up to the next
+  " item at the toggle's level or above.
+  let last = index + 1
+  while last < len(content) && content[last].level > level
+    let last += 1
+  endwhile
+
+  " Re-query this one database in place. The patched populate() delegates to the
+  " vendored populate_schemas()/populate_tables(), so db.tables / db.schemas now
+  " hold the fresh answer while every other node keeps its own.
+  call a:drawer.populate(a:db)
+
+  " Rebuild the subtree into a scratch list with the vendored renderer plus the
+  " Backups section, then swap it into content. Rendering into the real content
+  " would append after the whole tree instead of at the database's position.
+  let saved = a:drawer.content
+  try
+    let a:drawer.content = []
+    call a:drawer.dbui_multidb_orig_add_db(a:db)
+    call dbui_multidb#administrative#append(a:drawer, a:db)
+    let rendered = a:drawer.content
+  finally
+    let a:drawer.content = saved
+  endtry
+
+  " A discovered database was indented one level by the server renderer.
+  if level > 0
+    for item in rendered
+      let item.level += level
+    endfor
+  endif
+
+  call remove(content, index, last - 1)
+  call extend(content, rendered, index)
+  call dbui_multidb#administrative#repaint(a:drawer)
+  return 1
+endfunction
+
 " Rebuild the drawer buffer from its content exactly like render() does,
 " without rebuilding the content itself. Used after replace_section(): the new
 " items have to be shown, but the tree must stay as it is. Returns 0 when the

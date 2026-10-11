@@ -180,8 +180,10 @@ it. A backup or restore is a detached job: the editor is never blocked, and a
 notification reports when it starts and again when it finishes (or fails, with the log
 to read). When a local backup finishes, only that database's **Backups** section is
 rewritten in place — the new file appears and the count grows — so the rest of the
-tree, the cursor and the view are left as they were; a restore, or a server-side
-dump, changes no local listing and leaves the drawer alone. Passwords never reach a
+tree, the cursor and the view are left as they were. When a restore finishes, that
+one database is re-queried and only its subtree is rewritten, so the restored
+contents replace the old ones in place. A server-side dump changes no local listing
+and leaves the drawer alone. Passwords never reach a
 notification: the command is built from the connection URL, which carries the
 credentials, and the displayed command is redacted.
 

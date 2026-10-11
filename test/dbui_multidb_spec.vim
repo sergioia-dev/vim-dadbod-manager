@@ -633,16 +633,50 @@ function! s:test_backups_section() abort
   call s:ok(s:index_of(lines, '^    \S* Backups (3)$') > -1, 'a finished backup refreshes its section on job exit')
   call s:ok(s:index_of(lines, 'backup-2024-04-04-11-00-00') > -1, 'the finished backup appears in the section')
 
-  " A successful restore changes no local listing, so it schedules nothing.
+  " A restore re-queries the database it wrote into and rebuilds only that
+  " database's subtree, so the restored contents show up without redrawing or
+  " collapsing the rest of the tree. The direct refresh is what the job exit
+  " schedules.
+  let calls = len(g:dbui_multidb_test_calls)
+  let lines = getline(1, '$')
+
+  " Open the Tables section so the refreshed rows are observable, not just the
+  " count.
+  call cursor(s:index_of(lines, 'Tables (1)$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call s:ok(s:index_of(lines, '^      .*orders$') > -1, 'the database lists its table before the restore')
+
+  let g:dbui_multidb_test_tables = ['orders', 'users']
+  call s:eq(dbui_multidb#backup#refresh_database({'db': alpha}), 1,
+        \ 'a restored database is re-queried in place')
+  let lines = getline(1, '$')
+  call s:ok(s:index_of(lines, 'Tables (2)$') > -1,
+        \ 'the restored database shows its refreshed table count')
+  call s:ok(s:index_of(lines, '^      .*orders$') > -1, 'the refresh keeps an unchanged table')
+  call s:ok(s:index_of(lines, '^      .*users$') > -1, 'the refresh lists the new table')
+  call s:ok(s:index_of(lines, '^  " Databases (2)$') > -1, 'the refresh leaves the server node alone')
+  call s:ok(s:index_of(lines, '^  .*master$') > -1, 'the refresh leaves the sibling database alone')
+  call s:eq(len(g:dbui_multidb_test_calls), calls, 'the refresh re-discovers nothing')
+  call s:eq(dbui_multidb#backup#refresh_database({'db': {'key_name': 'nope'}}), 0,
+        \ 'a database that is not in the drawer reports that there was nothing to refresh')
+
+  " The same refresh runs from a restore's job exit, deferred by a zero-delay
+  " timer so it never runs inside the job callback.
   let restored = g:dbui_multidb_backup_dir . '/alpha-backup-2024-05-05-12-00-00.sqlite3'
   call writefile([], restored)
+  let g:dbui_multidb_test_tables = ['orders', 'users', 'invoices']
   call dbui_multidb#backup#on_exit({
         \ 'db': alpha, 'local': 1, 'verb': 'Restore', 'target': restored,
         \ 'log': g:dbui_multidb_backup_dir . '/restore.log'}, 0, 0, 'exit')
   sleep 100m
   let lines = getline(1, '$')
-  call s:ok(s:index_of(lines, '^    \S* Backups (3)$') > -1, 'a finished restore leaves the section alone')
-  call s:ok(s:index_of(lines, 'backup-2024-05-05-12-00-00') < 0, 'a finished restore does not add a listing')
+  call s:ok(s:index_of(lines, 'Tables (3)$') > -1,
+        \ 'a finished restore re-queries the database on job exit')
+  call s:ok(s:index_of(lines, '^      .*invoices$') > -1,
+        \ 'the restored tables appear in the section')
+  call s:ok(s:index_of(lines, '^  " Databases (2)$') > -1,
+        \ 'a finished restore leaves the server node alone')
 
   runtime autoload/dbui_multidb/backup.vim
   runtime autoload/db_ui/utils.vim
