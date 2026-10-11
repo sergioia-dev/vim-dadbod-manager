@@ -1,7 +1,8 @@
 # Using vim-dadbod-manager
 
 The day-to-day guide: configuration, how a connection is recognised as a server
-node, the **Backups** section, the commands and how the drawer behaves. Install
+node, the **Administration** and **Backups** sections, the commands and how the
+drawer behaves. Install
 and the vendored-code notes live in [README.md](README.md).
 
 ## Configuration
@@ -32,6 +33,7 @@ let g:dbui_multidb_exclude = ['_test$', '_staging$']
 | `g:dbui_multidb_cache` | `1` | Discover once per server and reuse the result on later expansions. `0` re-queries on every expansion. |
 | `g:dbui_multidb_notify` | `1` | Show an info notification while a discovery is running. Failures are always notified: they are the reason the server node came back empty. |
 | `g:dbui_multidb_server_icons` | `{}` | Override the toggle icon of server nodes: `{'server_expanded': '▼', 'server_collapsed': '▶'}`. Unset keys fall back to `g:db_ui_icons`. |
+| `g:dbui_multidb_admin_section` | `1` | Draw the per-database **Administration** section (the provider's users and roles, with the destructive actions behind a confirmation) on expanded databases. `0` hides it. |
 | `g:dbui_multidb_backup_section` | `1` | Draw the per-database **Backups** section (lists backups, restores them, and offers a **New backup** action) on expanded client-side databases. `0` hides it. |
 | `g:dbui_multidb_backup_dir` | `'~/dbui-backups'` | Where client-side backups are written. `~` and `$VARS` are expanded. |
 | `g:dbui_multidb_backup_commands` | `{}` | Override a backup command by scheme (see [Backups](#backups)). |
@@ -169,6 +171,87 @@ than a plain connection. The schemes above that participate in auto-detection us
 A connection pinned to a specific database stays a plain connection, exactly as
 before. Set `g:dbui_multidb_masters` to a non-empty list to turn detection off
 entirely (see [Server detection](#server-detection)).
+
+## Administration
+
+An **expanded** database whose scheme has an administration provider gets an
+**Administration** section between **Tables** and **Backups**. Expand it to see the
+categories the provider serves, then expand a category to list what it holds. The
+registry ships six providers:
+
+- `postgresql` — **Users** (the roles that can log in) and **Roles** (every role).
+- `mysql` — **Users** (the accounts that can log in) and **Roles** (accounts created as roles).
+- `mariadb` — **Users** (the accounts that can log in) and **Roles** (the rows `is_role` marks), with the locked flag read from `mysql.global_priv`.
+- `sqlserver` — **Logins** and **Server roles**, the names the server itself uses.
+- `mongodb` — **Users** only, read from the database the connection authenticates against (`?authSource=`, else the URL's database, else `admin`).
+- `redis` — **Users** only (the ACL users).
+
+A scheme with no provider — every other scheme — draws no section at all.
+
+```
+▾ app
+    ▸ Saved queries (0)
+    ▸ Tables (128)
+    ▾ Administration
+        ▾ Users (3)
+            ▾ alice (active)
+                List
+                Attributes
+                Identity
+                Roles
+                Grants
+                Effective access
+                Dependencies
+                Activity
+                ────────────────────────
+                Lock
+                Reset password
+                Drop
+            ▸ root (superuser)
+            ▸ old (expired)
+        ▸ Roles (7)
+    ▾ Backups (1)
+        + New backup
+```
+
+The section, the categories and the entities are containers; expand them freely.
+Nothing is queried until a category is expanded, and a listing is fetched once and
+reused on every later collapse and expand, so drawing — or re-drawing — the tree
+costs nothing. The category shows its count once it is loaded. The status in
+parentheses is the server's own word for the entity, per provider: `postgresql`
+says `superuser`, `active`, `expired` or `group`; `mysql` and `mariadb` say `active`, `locked` or
+`expired` for an account and `role` for a role; `sqlserver` says `active`, `group`
+or `disabled` for a login and `fixed` or `user-defined` for a server role;
+`mongodb` shows the role summary (or `no roles`); `redis` says `on` or `off`.
+
+`<CR>` on a read-only leaf — **List**, **Attributes**, … **Activity** — opens a query
+buffer named after the database, the entity and the action, pre-filled with the
+statement and **not executed**: it is an ordinary query buffer, run it the way you
+run any other.
+
+The **Lock**, **Reset password** and **Drop** leaves sit below a rule and are
+**destructive**. `<CR>` on one asks for confirmation first (`Drop alice in database
+alpha?`), and only an accepted answer opens the statement — a cancelled one opens
+nothing and leaves the connection as it was. As with a read-only leaf the plugin
+does not run it itself; with `g:db_ui_auto_execute_table_helpers` set, the confirmed
+statement is executed as soon as the buffer opens.
+
+The section reuses the `tables` toggle icon, and its leaves render without an icon.
+A role whose name contains `->` (or is empty) is not supported, because the entity
+name is carried inside the drawer item's path. Names are quoted where they are
+identifiers (`DROP ROLE "a""b"`) and bound as literals where they are values
+(`o'brien`), never spliced into the statement as raw SQL.
+
+A provider is a registry entry plus one autoload file: `dbui_multidb#admin#register()`
+maps a scheme to a function prefix, and the file behind it answers `supports(db)`
+(which categories it serves — a string instead of a number renames the category,
+which is how `sqlserver` shows **Logins** and **Server roles**), `list_users(db)` /
+`list_roles(db)` (the category listing) and one builder per leaf (`user_drop(db,
+name)` and friends, returning the statement; an empty or missing builder hides
+that leaf, which is how `mongodb` omits Lock and `mysql` omits Effective access).
+The postgresql provider reads `pg_roles`; the others read their server's own
+catalogs (`mysql.user` and `role_edges`; MariaDB's `is_role`, `roles_mapping` and
+`global_priv`; `sys.server_principals`; `db.getUsers()`; `ACL LIST`).
 
 ## Backups
 
@@ -394,3 +477,14 @@ points; the help file is vendored text and is kept byte-identical.
   remembered per database, but a server that disappears from `g:dbs` takes its
   children with it (still-referenced children are kept alive if an open query buffer
   points at them, so a statusline never sees a dangling key).
+- The **Administration** section reports what the connection can see: its catalog
+  queries run with that connection's own rights, so a role you may not inspect is
+  simply not listed, and a statement the section opens succeeds or fails with them.
+- The **Administration** section is scheme-scoped, and a server node draws the same
+  section under every discovered database child: `mysql` accounts, `sqlserver` logins
+  and `postgresql` roles are server- or cluster-wide, while `mongodb` users are scoped
+  to the authentication database and `redis` users are the server's ACL.
+- `mysql` and `mariadb` share an account model but not the catalogs behind it:
+  MySQL 8 keeps roles in `mysql.user` with no flag (the provider infers them), while
+  MariaDB marks them with `is_role` and stores role grants in `roles_mapping`; each
+  scheme has its own provider reading the right catalog.

@@ -111,13 +111,15 @@ no `require` is needed.
 
 ## Usage
 
-The full guide — configuration, server detection, the **Backups** section, the
-`:DBManager*` commands and how the drawer behaves — lives in [USAGE.md](USAGE.md).
+The full guide — configuration, server detection, the **Administration** and
+**Backups** sections, the `:DBManager*` commands and how the drawer behaves — lives
+in [USAGE.md](USAGE.md).
 
 Quick start: open the drawer with `:DBManager` and expand a connection. With
 `g:dbui_multidb_masters` empty (the default), a connection whose adapter can list
 databases — and whose URL names no specific database — becomes a server node;
-expand it to list its databases and to see its per-database **Backups** section.
+expand it to list its databases and to see its per-database sections: **Backups**
+everywhere, and an **Administration** section of users and roles — for `postgresql`, `mysql`, `mariadb`, `sqlserver`, `mongodb` and `redis` (see [USAGE.md](USAGE.md)).
 
 ## Vendored code
 
@@ -181,7 +183,10 @@ cd plugins/vim-dadbod-manager
 ```
 
 The suite covers URL rebuilding per scheme (postgres/mysql/sqlserver/sqlite), the
-automatic server detection, the Backups section (create, restore, delete, rename), the discovery cache and invalidation, the rendered tree (indent,
+automatic server detection, the Backups section (create, restore, delete, rename), the
+Administration section (the provider gate, the lazy and cached category listing, the
+per-provider catalogs and quoting, the read-only leaves, the confirmation that gates the destructive ones, and the query
+buffer a leaf fills), the discovery cache and invalidation, the rendered tree (indent,
 icons, sections, expansion state), the refresh command, a missing client (the raw
 exception never reaches the drawer, the client is named in exactly one warning, a
 second server still discovers its databases, re-expanding retries), the

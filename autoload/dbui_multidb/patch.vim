@@ -65,6 +65,9 @@ function! dbui_multidb#patch#apply() abort
   endfor
   let drawer.dbui_multidb_new_backup = function('dbui_multidb#administrative#new_backup', drawer)
   let drawer.dbui_multidb_backup_file = function('dbui_multidb#administrative#backup_file', drawer)
+  " <CR> on a destructive Administration leaf is a call_method item whose type is
+  " the method name, like the Backups leaves above.
+  let drawer.dbui_multidb_admin_danger = function('dbui_multidb#admin#danger', drawer)
   let drawer.dbui_multidb_patched = 1
 
   return 1
@@ -94,6 +97,9 @@ endfunction
 function! dbui_multidb#patch#add_db(db) abort dict
   if !dbui_multidb#is_master(a:db)
     let result = self.dbui_multidb_orig_add_db(a:db)
+    " Administration above Backups, so a database's own contents come first and
+    " its destructive actions last.
+    call dbui_multidb#admin#append(self, a:db)
     call dbui_multidb#administrative#append(self, a:db)
     return result
   endif

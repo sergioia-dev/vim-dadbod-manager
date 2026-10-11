@@ -234,6 +234,7 @@ function! dbui_multidb#administrative#replace_database(drawer, db) abort
   try
     let a:drawer.content = []
     call a:drawer.dbui_multidb_orig_add_db(a:db)
+    call dbui_multidb#admin#append(a:drawer, a:db)
     call dbui_multidb#administrative#append(a:drawer, a:db)
     let rendered = a:drawer.content
   finally

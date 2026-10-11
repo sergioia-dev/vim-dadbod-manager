@@ -68,6 +68,10 @@ function! s:reset() abort
   let g:dbui_multidb_backup_runner = 'DbuiMultidbTestRecordBackup'
   let g:dbui_multidb_test_backup_plans = []
   call dbui_multidb#backup#reset()
+  " The administration registry only keeps its built-in provider, and any of its
+  " functions a test stubbed is replaced by the real one.
+  runtime autoload/dbui_multidb/admin.vim
+  call dbui_multidb#admin#reset()
 endfunction
 " Notifications are collected instead of displayed so a test can assert on what
 " the user is told. This replaces upstream notifiers; s:end_capture() puts them
@@ -1146,6 +1150,598 @@ function! s:test_notify() abort
   call s:ok(exists('*db_ui#notifications#warning'), 'the upstream notifier is restored')
 endfunction
 
+" The Administration section: the provider gate, the drawer-driven tree, the
+" lazy listing, the entity leaves, and the query buffer a leaf opens.
+function! s:test_admin_section() abort
+  call s:reset()
+  let g:dbs = {'Server': 'fakedb://u@h/master', 'Plain': 'sqlite:/var/lib/plain.db'}
+  let g:dbui_multidb_test_dbs = ['alpha']
+  let g:dbui_multidb_test_tables = ['orders']
+  call dbui_multidb#setup({'masters': ['Server']})
+
+  " alpha is discovered through the fake adapter, but the section is about the
+  " SQL: point the fake scheme at the real postgresql provider.
+  call dbui_multidb#admin#register('fakedb', 'dbui_multidb#admin#postgresql#')
+
+  " Every provider call goes through dbui_multidb#admin#query, so stubbing it
+  " is the only seam needed to keep this test off any server.
+  let g:dbui_multidb_test_admin_queries = []
+  let g:dbui_multidb_test_admin_users = [
+        \ ['alice', 'f', 't', ''],
+        \ ['root', 't', 't', 'infinity'],
+        \ ['old', 'f', 't', '2020-01-01 00:00:00'],
+        \ ]
+  let g:dbui_multidb_test_admin_roles = [
+        \ ['alice', 'f', 't'],
+        \ ['root', 't', 't'],
+        \ ['team', 'f', 'f'],
+        \ ]
+  function! dbui_multidb#admin#query(db, sql) abort
+    call add(g:dbui_multidb_test_admin_queries, a:sql)
+    if a:sql =~# 'WHERE rolcanlogin'
+      return g:dbui_multidb_test_admin_users
+    endif
+    return g:dbui_multidb_test_admin_roles
+  endfunction
+
+  call s:begin_capture()
+  DBManager
+  let drawer = db_ui#drawer#get()
+
+  " A collapsed tree shows no section, and a connection with no provider (the
+  " plain sqlite one) never gets one either.
+  let lines = getline(1, '$')
+  call s:ok(s:index_of(lines, 'Administration') < 0,
+        \ 'a collapsed tree shows no Administration section')
+
+  call cursor(s:index_of(lines, 'Server$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call cursor(s:index_of(lines, 'alpha$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+
+  let section = s:index_of(lines, '^    \S* Administration$')
+  call s:ok(section > -1, 'an expanded database appends an Administration section')
+  let backups = s:index_of(lines, '^    \S* Backups')
+  call s:ok(section > -1 && backups > -1 && section < backups,
+        \ 'Administration sits above Backups')
+  call s:eq(len(g:dbui_multidb_test_admin_queries), 0, 'drawing the section runs no query')
+
+  " Expanding the section lists the categories without querying anything.
+  call cursor(section + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call s:ok(s:index_of(lines, '^      .* Users$') > -1, 'the section lists its Users category')
+  call s:ok(s:index_of(lines, '^      .* Roles$') > -1, 'the section lists its Roles category')
+  call s:eq(len(g:dbui_multidb_test_admin_queries), 0, 'listing the categories runs no query')
+
+  " Expanding a category queries once, then shows the count and the entities.
+  call cursor(s:index_of(lines, '^      .* Users$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call s:eq(len(g:dbui_multidb_test_admin_queries), 1, 'expanding a category queries once')
+  call s:ok(g:dbui_multidb_test_admin_queries[0] =~# 'FROM pg_roles',
+        \ 'the Users category reads pg_roles')
+  call s:ok(s:index_of(lines, '^      .* Users (3)$') > -1,
+        \ 'the category shows its count once loaded')
+  call s:ok(s:index_of(lines, '^        .* alice (active)$') > -1, 'a login is listed as active')
+  call s:ok(s:index_of(lines, '^        .* root (superuser)$') > -1, 'a superuser is labelled')
+  call s:ok(s:index_of(lines, '^        .* old (expired)$') > -1,
+        \ 'a login past its validity is expired')
+
+  " The listing is fetched once, not on every expansion.
+  call cursor(s:index_of(lines, '^      .* Users (3)$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call cursor(s:index_of(lines, '^      .* Users$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call s:eq(len(g:dbui_multidb_test_admin_queries), 1,
+        \ 'the category list is cached, not re-queried')
+  call s:ok(s:index_of(lines, '^        .* alice (active)$') > -1,
+        \ 'the cached entities come back on re-expansion')
+
+  " A role that cannot log in is still listed, as a group.
+  call cursor(s:index_of(lines, '^      .* Roles$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call s:eq(len(g:dbui_multidb_test_admin_queries), 2, 'expanding Roles queries once more')
+  call s:ok(s:index_of(lines, '^        .* team (group)$') > -1,
+        \ 'a role that cannot log in is a group')
+
+  " An entity expands into its read-only actions, a rule, then the destructive
+  " ones, in that order.
+  call cursor(s:index_of(lines, '^        .* alice (active)$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  for label in ['List', 'Attributes', 'Identity', 'Roles', 'Grants',
+        \ 'Effective access', 'Dependencies', 'Activity']
+    call s:ok(s:index_of(lines, '^          .*' . label . '$') > -1,
+          \ 'the entity offers ' . label)
+  endfor
+  for label in ['Lock', 'Reset password', 'Drop']
+    call s:ok(s:index_of(lines, '^          .*' . label . '$') > -1,
+          \ 'the entity offers the ' . label . ' action')
+  endfor
+  let rule = s:index_of(lines, '^          ' . repeat('─', 24) . '$')
+  call s:ok(rule > -1, 'a rule separates the read-only actions from the destructive ones')
+  call s:ok(s:index_of(lines, '^          .* Activity$') < rule,
+        \ 'the rule comes after the read-only actions')
+  call s:ok(s:index_of(lines, '^          .*Drop$') > rule,
+        \ 'the rule comes before the destructive actions')
+
+  " A re-render in place keeps everything and reuses the loaded categories.
+  call drawer.render()
+  let lines = getline(1, '$')
+  call s:ok(s:index_of(lines, '^    \S* Administration$') > -1, 'a re-render keeps the section')
+  call s:ok(s:index_of(lines, '^          .*Drop$') > -1,
+        \ 'a re-render keeps an expanded entity')
+  call s:eq(len(g:dbui_multidb_test_admin_queries), 2,
+        \ 'a re-render reuses the loaded categories')
+
+  " A leaf opens a real query buffer, pre-filled and never executed.
+  let attributes = s:index_of(lines, '^          .*Attributes$')
+  call s:ok(attributes > -1, 'the Attributes leaf is drawn')
+  call cursor(attributes + 1, 1)
+  call drawer.toggle_line('edit')
+  let buffers = drawer.dbui.dbs['Server_g:dbs::alpha'].buffers.list
+  call s:ok(!empty(buffers), 'a leaf opens a query buffer')
+  let path = buffers[-1]
+  call s:ok(path =~? 'alice-attributes', 'the buffer is named after the entity and the action')
+  let content = getbufline(bufnr(path), 1, '$')
+  call s:ok(index(content,
+        \ 'SELECT rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb,') > -1,
+        \ 'the buffer is pre-filled with the leaf SQL')
+
+  call s:end_capture()
+endfunction
+
+" The postgresql provider: static category support, the psql argv, identifier
+" and literal quoting, the status rules, and the shared role queries.
+function! s:test_admin_provider() abort
+  call s:reset()
+
+  let db = {'url': 'postgresql://u@h/db', 'name': 'db'}
+
+  call s:eq(dbui_multidb#admin#postgresql#supports(db), {'users': 1, 'roles': 1},
+        \ 'the postgresql provider serves users and roles')
+
+  let argv = dbui_multidb#admin#postgresql#query_argv(db, 'SELECT 1')
+  call s:eq(argv[0], 'psql', 'the statement runs through psql')
+  call s:eq(count(argv, '-w'), 1, 'the adapter connection arguments are reused once')
+  call s:ok(index(argv, '-tA') > -1 && index(argv, '-F') > -1
+        \ && argv[index(argv, '-F') + 1] ==# '|',
+        \ 'the output is unaligned tuples separated by a bar')
+  call s:ok(index(argv, '-v') > -1 && argv[index(argv, '-v') + 1] ==# 'ON_ERROR_STOP=1',
+        \ 'a failing statement stops psql')
+  call s:ok(index(argv, '-c') > -1 && argv[index(argv, '-c') + 1] ==# 'SELECT 1',
+        \ 'the statement is passed to psql')
+
+  " A role name reaches the server as an identifier or as a literal, never as
+  " raw SQL.
+  let sql = dbui_multidb#admin#postgresql#user_drop(db, 'a"b')
+  call s:ok(stridx(sql, '"a""b"') > -1, 'a quote in a role name is doubled in an identifier')
+  let sql = dbui_multidb#admin#postgresql#user_grants(db, "o'brien")
+  call s:ok(stridx(sql, "'o''brien'") > -1, 'a quote in a role name is doubled in a literal')
+
+  " The status is what pg_roles says about the role.
+  call s:eq(dbui_multidb#admin#postgresql#user_status(1, 1, ''), 'superuser',
+        \ 'a superuser is reported as such')
+  call s:eq(dbui_multidb#admin#postgresql#user_status(0, 1, '2020-01-01 00:00:00'), 'expired',
+        \ 'a validity in the past is expired')
+  call s:eq(dbui_multidb#admin#postgresql#user_status(0, 1, ''), 'active',
+        \ 'a login without a deadline is active')
+  call s:eq(dbui_multidb#admin#postgresql#user_status(0, 1, 'infinity'), 'active',
+        \ 'an infinite validity never expires')
+  call s:eq(dbui_multidb#admin#postgresql#user_status(0, 0, ''), 'group',
+        \ 'a role that cannot log in is a group')
+
+  " A role is a catalog row like a user, so most leaves are the same query.
+  call s:eq(dbui_multidb#admin#postgresql#role_attributes(db, 'x'),
+        \ dbui_multidb#admin#postgresql#user_attributes(db, 'x'),
+        \ 'a role and a user share their attributes query')
+  call s:ok(dbui_multidb#admin#postgresql#role_members(db, 'x') =~# 'AS member',
+        \ 'the members listing is a query of its own')
+endfunction
+
+" supports() is the seam between a provider's answer and the drawer: a number
+" is a yes with the category's own name, a non-empty string is a yes and names
+" the category, and an empty answer is a no. Reading the answer with
+" filter(dict, 'v:val') would turn the label string into str2nr(), dropping
+" it, so a provider that renames a category - sqlserver's Logins - would
+" never be drawn at all.
+function! s:test_admin_relabel() abort
+  call s:reset()
+
+  call dbui_multidb#admin#register('relabeldb', 'dbui_multidb#admin#relabelprovider#')
+
+  let db = {'url': 'relabeldb://u@h/db', 'name': 'db'}
+  call s:eq(dbui_multidb#admin#supports(db), {'users': 'Logins', 'extra': 1},
+        \ 'a string answer survives as the label and an empty one is dropped')
+  call s:eq(map(copy(dbui_multidb#admin#categories_for(db)), 'v:val.label'),
+        \ ['Logins'],
+        \ 'categories_for() labels the renamed category')
+
+  " The same path against the real sqlserver provider.
+  let db = {'url': 'sqlserver://sa:p@h:1433/master', 'name': 'master'}
+  call s:eq(dbui_multidb#admin#supports(db),
+        \ {'users': 'Logins', 'roles': 'Server roles'},
+        \ 'sqlserver keeps both of its renamed categories')
+  call s:eq(map(copy(dbui_multidb#admin#categories_for(db)), 'v:val.label'),
+        \ ['Logins', 'Server roles'],
+        \ 'sqlserver draws Logins and Server roles')
+endfunction
+
+" <CR> on a destructive leaf: the confirmation gates the buffer, and cancelling
+" leaves the server as it was.
+function! s:test_admin_danger() abort
+  call s:reset()
+  call dbui_multidb#admin#register('fakedb', 'dbui_multidb#admin#postgresql#')
+
+  let g:dbui_multidb_test_admin_calls = []
+  let g:dbui_multidb_test_admin_question = ''
+  let g:dbui_multidb_test_admin_current = {
+        \ 'type': 'dbui_multidb_admin_danger',
+        \ 'label': 'Drop',
+        \ 'table': 'alice',
+        \ 'dbui_admin_confirm': 'Drop alice in database alpha?',
+        \ 'content': 'DROP ROLE "alice"',
+        \ 'dbui_db_key_name': 'Server_g:dbs::alpha',
+        \ }
+  let fake = {
+        \ 'get_current_item': {-> g:dbui_multidb_test_admin_current},
+        \ 'get_query': {-> {'open': {item, action -> add(g:dbui_multidb_test_admin_calls, [item.label, action])}}},
+        \ }
+  let fake.admin_danger = function('dbui_multidb#admin#danger', fake)
+
+  function! dbui_multidb#admin#confirm(question) abort
+    let g:dbui_multidb_test_admin_question = a:question
+    return 1
+  endfunction
+
+  call fake.admin_danger()
+  call s:eq(len(g:dbui_multidb_test_admin_calls), 1, 'an accepted confirmation opens the statement')
+  call s:eq(g:dbui_multidb_test_admin_calls[0][0], 'Drop',
+        \ 'the opened buffer is the destructive action')
+  call s:eq(g:dbui_multidb_test_admin_calls[0][1], 'edit',
+        \ 'the statement opens for editing, not execution')
+  call s:eq(g:dbui_multidb_test_admin_question, 'Drop alice in database alpha?',
+        \ 'the confirmation names the action, the entity and the database')
+
+  function! dbui_multidb#admin#confirm(question) abort
+    return 0
+  endfunction
+
+  call fake.admin_danger()
+  call s:eq(len(g:dbui_multidb_test_admin_calls), 1, 'a declined confirmation opens nothing')
+
+  let g:dbui_multidb_test_admin_current = {'type': 'table', 'label': 'Attributes'}
+  call fake.admin_danger()
+  call s:eq(len(g:dbui_multidb_test_admin_calls), 1, 'an ordinary leaf is not treated as destructive')
+
+  let g:dbui_multidb_test_admin_current = []
+  call fake.admin_danger()
+  call s:eq(len(g:dbui_multidb_test_admin_calls), 1, 'a missing item is ignored')
+
+  " The drawer item a destructive leaf becomes carries its own question.
+  let db = {'url': 'fakedb://u@h/alpha', 'name': 'alpha', 'key_name': 'Server_g:dbs::alpha'}
+  let categories = dbui_multidb#admin#categories()
+  let leaf = categories[0].danger[2]
+  let item = dbui_multidb#admin#danger_item(db, leaf, 'alice', 'DROP ROLE "alice"', 5)
+  call s:eq(item.action, 'call_method', 'a destructive leaf is a drawer method call')
+  call s:eq(item.type, 'dbui_multidb_admin_danger', 'the method is the danger handler')
+  call s:eq(item.dbui_admin_confirm, 'Drop alice in database alpha?',
+        \ 'the item carries its own confirmation question')
+endfunction
+
+" The mysql provider: account-shaped catalogs, a client with no field-separator
+" switch, and the last-@ split of an account name.
+function! s:test_admin_mysql() abort
+  call s:reset()
+
+  let db = {'url': 'mysql://u:p@h:3306/db', 'name': 'db'}
+
+  call s:eq(dbui_multidb#admin#mysql#supports(db), {'users': 1, 'roles': 1},
+        \ 'the mysql provider serves users and roles')
+
+  let argv = dbui_multidb#admin#mysql#query_argv(db, 'SELECT 1')
+  call s:eq(argv[0], 'mysql', 'the statement runs through the mysql client')
+  call s:ok(index(argv, '-N') > -1 && index(argv, '-B') > -1,
+        \ 'the output is batch mode without column names')
+  call s:ok(index(argv, '-e') > -1 && argv[index(argv, '-e') + 1] ==# 'SELECT 1',
+        \ 'the statement is passed to mysql')
+
+  " Both catalogs read the same table through the two halves of the
+  " account/role discriminator, so the stub answers by which half it is.
+  function! dbui_multidb#admin#query(db, sql) abort
+    if a:sql =~# 'account_locked, password_expired'
+      return [
+            \ ['root', '%', 'N', 'N'],
+            \ ['mysql.sys', 'localhost', 'Y', 'N'],
+            \ ['reporter', '%', 'N', 'Y'],
+            \ ]
+    endif
+    return [['app_role', '%']]
+  endfunction
+
+  let users = dbui_multidb#admin#mysql#list_users(db)
+  call s:eq(len(users), 3, 'the mysql provider lists the accounts')
+  call s:eq(users[0].name, 'root@%', 'an account name joins user@host')
+  call s:eq(users[0].status, 'active', 'an unlocked account is active')
+  call s:eq(users[1].status, 'locked', 'the system account is locked')
+  call s:eq(users[2].status, 'expired', 'an unlocked but expired password is expired')
+
+  let roles = dbui_multidb#admin#mysql#list_roles(db)
+  call s:eq(len(roles), 1, 'the mysql provider lists the roles')
+  call s:eq(roles[0].name, 'app_role@%', 'a role joins user@host')
+  call s:eq(roles[0].status, 'role', 'a role is labelled a role')
+
+  " An account is written 'user'@'host', split at the last @ so a user name that
+  " itself holds one survives.
+  call s:eq(dbui_multidb#admin#mysql#user_drop(db, 'root@localhost'),
+        \ "DROP USER 'root'@'localhost'", 'an account drops as its user@host name')
+  call s:eq(dbui_multidb#admin#mysql#user_drop(db, 'a@b@localhost'),
+        \ "DROP USER 'a@b'@'localhost'", 'a user name with an @ splits at the last @')
+  call s:eq(dbui_multidb#admin#mysql#user_drop(db, "o'connor@localhost"),
+        \ "DROP USER 'o''connor'@'localhost'", 'a quote in a name is doubled in a literal')
+  call s:eq(dbui_multidb#admin#mysql#user_lock(db, 'root@%'),
+        \ "ALTER USER 'root'@'%' ACCOUNT LOCK", 'locking an account disables its login')
+  call s:eq(dbui_multidb#admin#mysql#user_identity(db, 'root@localhost'),
+        \ "SHOW CREATE USER 'root'@'localhost'", 'an account identity is SHOW CREATE USER')
+  call s:ok(dbui_multidb#admin#mysql#role_members(db, 'app_role@%')
+        \ =~# "from_user = 'app_role'", 'the role members read role -> grantee')
+  call s:eq(dbui_multidb#admin#mysql#user_effective_access(db, 'x'), '',
+        \ 'effective access is hidden for mysql')
+  call s:eq(dbui_multidb#admin#mysql#role_lock(db, 'x'), '',
+        \ 'a role cannot be locked')
+endfunction
+
+" The sqlserver provider: the catalog SQL Server calls logins and server roles,
+" and the fixed-role memo that gates the drop.
+function! s:test_admin_sqlserver() abort
+  call s:reset()
+
+  let db = {'url': 'sqlserver://u:p@h:1433/master', 'name': 'master'}
+
+  call s:eq(dbui_multidb#admin#sqlserver#supports(db),
+        \ {'users': 'Logins', 'roles': 'Server roles'},
+        \ 'the sqlserver provider renames its categories')
+
+  let argv = dbui_multidb#admin#sqlserver#query_argv(db, 'SELECT 1')
+  call s:ok(index(argv, 'sqlcmd') > -1, 'the statement runs through sqlcmd')
+  call s:ok(index(argv, '-b') > -1, 'a failing statement makes the client exit non-zero')
+  call s:ok(index(argv, '-s') > -1 && argv[index(argv, '-s') + 1] ==# '|',
+        \ 'the output is separated by a bar')
+  call s:ok(index(argv, '-h') > -1 && argv[index(argv, '-h') + 1] ==# '-1',
+        \ 'the column headers are dropped')
+  call s:ok(index(argv, '-Q') > -1
+        \ && argv[index(argv, '-Q') + 1] =~# '^SET NOCOUNT ON; SELECT 1',
+        \ 'the statement is prefixed with SET NOCOUNT ON')
+
+  function! dbui_multidb#admin#query(db, sql) abort
+    if a:sql =~# 'is_disabled'
+      return [
+            \ ['sa', 'SQL_LOGIN', '0'],
+            \ ['NT AUTHORITY\SYSTEM', 'WINDOWS_LOGIN', '0'],
+            \ ['BUILTIN\Administrators', 'WINDOWS_GROUP', '0'],
+            \ ['##MS_PolicyEventProcessingLogin##', 'SQL_LOGIN', '1'],
+            \ ]
+    endif
+    return [
+          \ ['sysadmin', '1'],
+          \ ['public', '0'],
+          \ ['dbcreator', '1'],
+          \ ['reporting', '0'],
+          \ ]
+  endfunction
+
+  let users = dbui_multidb#admin#sqlserver#list_users(db)
+  call s:eq(len(users), 4, 'the sqlserver provider lists the logins')
+  call s:eq(users[0].status, 'active', 'an enabled SQL login is active')
+  call s:eq(users[1].status, 'active', 'a Windows login is active')
+  call s:eq(users[2].status, 'group', 'a Windows group is a group')
+  call s:eq(users[3].status, 'disabled', 'a disabled login is disabled')
+
+  let roles = dbui_multidb#admin#sqlserver#list_roles(db)
+  call s:eq(len(roles), 4, 'the sqlserver provider lists the server roles')
+  call s:eq(roles[0].status, 'fixed', 'sysadmin is fixed')
+  call s:eq(roles[1].status, 'fixed', 'public is fixed though its flag is 0')
+  call s:eq(roles[2].status, 'fixed', 'dbcreator is fixed')
+  call s:eq(roles[3].status, 'user-defined', 'a made role is user-defined')
+
+  call s:eq(dbui_multidb#admin#sqlserver#role_drop(db, 'sysadmin'), '',
+        \ 'a fixed role has no drop statement')
+  call s:eq(dbui_multidb#admin#sqlserver#role_drop(db, 'public'), '',
+        \ 'public has no drop statement')
+  call s:eq(dbui_multidb#admin#sqlserver#role_drop(db, 'reporting'),
+        \ 'DROP ROLE [reporting]', 'a user-defined role can be dropped')
+
+  call s:eq(dbui_multidb#admin#sqlserver#user_lock(db, 'NT AUTHORITY\SYSTEM'),
+        \ 'ALTER LOGIN [NT AUTHORITY\SYSTEM] DISABLE',
+        \ 'a Windows login is locked as a bracketed identifier')
+  call s:eq(dbui_multidb#admin#sqlserver#user_drop(db, 'a]b'),
+        \ 'DROP LOGIN [a]]b]', 'a bracket in a name is doubled in an identifier')
+  call s:ok(dbui_multidb#admin#sqlserver#user_grants(db, "o'brien")
+        \ =~# "SUSER_ID(N'o''brien')", 'a quote in a name is doubled in a literal')
+  call s:eq(dbui_multidb#admin#sqlserver#user_reset_password(db, 'sa'),
+        \ "ALTER LOGIN [sa] WITH PASSWORD = N'new-password'",
+        \ 'a reset names a placeholder password')
+endfunction
+
+" The mongodb provider: users in the authentication database, JavaScript
+" statements, and the authSource scope.
+function! s:test_admin_mongodb() abort
+  call s:reset()
+
+  let db = {'url': 'mongodb://u@h/mydb?authSource=admin', 'name': 'mydb'}
+
+  call s:eq(dbui_multidb#admin#mongodb#supports(db), {'users': 1},
+        \ 'the mongodb provider serves only users')
+
+  let argv = dbui_multidb#admin#mongodb#query_argv(db, 'db.version()')
+  call s:eq(argv[0], 'mongosh', 'the statement runs through mongosh')
+  call s:ok(index(argv, '--eval') > -1
+        \ && argv[index(argv, '--eval') + 1] ==# 'db.version()',
+        \ 'the script is passed to mongosh')
+  call s:ok(index(argv, '--quiet') > -1, 'the client is quiet')
+
+  function! dbui_multidb#admin#query(db, sql) abort
+    return [['admin', 'root@admin']]
+  endfunction
+
+  let users = dbui_multidb#admin#mongodb#list_users(db)
+  call s:eq(len(users), 1, 'the mongodb provider lists the users')
+  call s:eq(users[0].name, 'admin', 'the user name is the first field')
+  call s:eq(users[0].status, 'root@admin', 'the role summary is the status')
+  call s:ok(stridx(dbui_multidb#admin#mongodb#user_attributes(db, 'x'), 'getSiblingDB("admin")') > -1,
+        \ 'the authSource database is the scope, not the URL database')
+
+  let db2 = {'url': 'mongodb://u@h/mydb', 'name': 'mydb'}
+  call s:ok(stridx(dbui_multidb#admin#mongodb#user_attributes(db2, 'x'), 'getSiblingDB("mydb")') > -1,
+        \ 'the URL database is the scope when there is no authSource')
+  let db3 = {'url': 'mongodb://u@h', 'name': ''}
+  call s:ok(stridx(dbui_multidb#admin#mongodb#user_attributes(db3, 'x'), 'getSiblingDB("admin")') > -1,
+        \ 'admin is the scope when the URL names no database')
+
+  call s:ok(stridx(dbui_multidb#admin#mongodb#user_drop(db, 'a"b'), 'dropUser("a\"b")') > -1,
+        \ 'a quote in a name is escaped in a JavaScript literal')
+  call s:eq(dbui_multidb#admin#mongodb#user_lock(db, 'x'), '',
+        \ 'there is no lock in mongodb')
+endfunction
+
+" The redis provider: the ACL user catalog, the raw client, and the command-word
+" shape of a statement.
+function! s:test_admin_redis() abort
+  call s:reset()
+
+  let db = {'url': 'redis:///', 'name': ''}
+
+  call s:eq(dbui_multidb#admin#redis#supports(db), {'users': 1},
+        \ 'the redis provider serves only users')
+
+  let argv = dbui_multidb#admin#redis#query_argv(db, 'ACL GETUSER default')
+  call s:eq(argv[0], 'redis-cli', 'the command runs through redis-cli')
+  call s:ok(index(argv, '--raw') > -1, 'the pretty printer is turned off')
+  call s:eq(argv[-3:], ['ACL', 'GETUSER', 'default'],
+        \ 'the command is split into its words')
+
+  function! dbui_multidb#admin#query(db, sql) abort
+    return [
+          \ ['user default on nopass sanitize-payload ~* &* +@all'],
+          \ ['user bob off -@all'],
+          \ ]
+  endfunction
+
+  let users = dbui_multidb#admin#redis#list_users(db)
+  call s:eq(len(users), 2, 'the redis provider lists the ACL users')
+  call s:eq(users[0].name, 'default', 'the name is the word after user')
+  call s:eq(users[0].status, 'on', 'an enabled user is on')
+  call s:eq(users[1].status, 'off', 'a disabled user is off')
+
+  call s:eq(dbui_multidb#admin#redis#user_lock(db, 'default'),
+        \ 'ACL SETUSER default off', 'locking a user turns it off')
+  call s:eq(dbui_multidb#admin#redis#user_reset_password(db, 'alice'),
+        \ 'ACL SETUSER alice resetpass', 'resetting a password clears it')
+  call s:eq(dbui_multidb#admin#redis#user_drop(db, 'alice'),
+        \ 'ACL DELUSER alice', 'dropping a user deletes it')
+  call s:eq(dbui_multidb#admin#redis#user_attributes(db, 'with space'), '',
+        \ 'a name with whitespace hides the leaf')
+  call s:eq(dbui_multidb#admin#redis#user_activity(db, 'x'), 'CLIENT LIST',
+        \ 'activity is the whole client list')
+endfunction
+
+" The mariadb provider: the is_role discriminator, the account_locked JSON flag
+" and the roles_mapping catalog, which all differ from MySQL's.
+function! s:test_admin_mariadb() abort
+  call s:reset()
+
+  let db = {'url': 'mariadb://u:p@h:3306/db', 'name': 'db'}
+
+  call s:eq(dbui_multidb#admin#mariadb#supports(db), {'users': 1, 'roles': 1},
+        \ 'the mariadb provider serves users and roles')
+
+  let argv = dbui_multidb#admin#mariadb#query_argv(db, 'SELECT 1')
+  call s:eq(argv[0], 'mariadb', 'the statement runs through the mariadb client')
+  call s:ok(index(argv, '-N') > -1 && index(argv, '-B') > -1,
+        \ 'the output is batch mode without column names')
+  call s:ok(index(argv, '-e') > -1 && argv[index(argv, '-e') + 1] ==# 'SELECT 1',
+        \ 'the statement is passed to mariadb')
+
+  " The two catalogs are told apart by which half reads them: only the account
+  " listing joins global_priv for the locked flag.
+  function! dbui_multidb#admin#query(db, sql) abort
+    if a:sql =~# 'password_expired'
+      return [
+            \ ['healthcheck', 'localhost', 'N', ''],
+            \ ['mariadb.sys', 'localhost', 'Y', '1'],
+            \ ['root', '%', 'N', ''],
+            \ ]
+    endif
+    return [['app_role']]
+  endfunction
+
+  let users = dbui_multidb#admin#mariadb#list_users(db)
+  call s:eq(len(users), 3, 'the mariadb provider lists the accounts')
+  call s:eq(users[0].status, 'active', 'an unlocked account is active')
+  call s:eq(users[1].status, 'locked', 'the locked flag is read from the global_priv JSON')
+  call s:eq(users[2].status, 'active', 'root is active')
+
+  let roles = dbui_multidb#admin#mariadb#list_roles(db)
+  call s:eq(len(roles), 1, 'the mariadb provider lists the roles')
+  call s:eq(roles[0].name, 'app_role', 'a role is a bare name, not user@host')
+  call s:eq(roles[0].status, 'role', 'a role is labelled a role')
+
+  call s:eq(dbui_multidb#admin#mariadb#user_drop(db, 'root@localhost'),
+        \ "DROP USER 'root'@'localhost'", 'an account drops as its user@host name')
+  call s:eq(dbui_multidb#admin#mariadb#user_drop(db, 'a@b@localhost'),
+        \ "DROP USER 'a@b'@'localhost'", 'a user name with an @ splits at the last @')
+  call s:eq(dbui_multidb#admin#mariadb#user_drop(db, "o'connor@localhost"),
+        \ "DROP USER 'o''connor'@'localhost'", 'a quote in a name is doubled in a literal')
+  call s:eq(dbui_multidb#admin#mariadb#user_lock(db, 'root@%'),
+        \ "ALTER USER 'root'@'%' ACCOUNT LOCK", 'locking an account disables its login')
+  call s:eq(dbui_multidb#admin#mariadb#user_identity(db, 'root@localhost'),
+        \ "SHOW CREATE USER 'root'@'localhost'", 'an account identity is SHOW CREATE USER')
+  call s:ok(dbui_multidb#admin#mariadb#role_members(db, 'app_role')
+        \ =~# "FROM mysql.roles_mapping", 'the role members read roles_mapping')
+  call s:ok(dbui_multidb#admin#mariadb#role_members(db, 'app_role')
+        \ =~# "WHERE Role = 'app_role'", 'the members are read by the role, not the grantee')
+  call s:eq(dbui_multidb#admin#mariadb#role_drop(db, 'app_role'),
+        \ "DROP ROLE 'app_role'", 'a role drops by its bare name')
+  call s:eq(dbui_multidb#admin#mariadb#role_grants(db, 'app_role'),
+        \ "SHOW GRANTS FOR 'app_role'", 'a role is shown by its bare name')
+  call s:eq(dbui_multidb#admin#mariadb#user_effective_access(db, 'x'), '',
+        \ 'effective access is hidden for mariadb')
+  call s:eq(dbui_multidb#admin#mariadb#role_lock(db, 'x'), '',
+        \ 'a role cannot be locked')
+endfunction
+
+" The administration query seam turns a missing or failing client into an error,
+" which is what keeps a silent failure from being drawn as an empty category.
+function! s:test_admin_query_errors() abort
+  call s:reset()
+
+  call dbui_multidb#admin#register('fakedb', 'dbui_multidb#admin#failprovider#')
+  let db = {'url': 'fakedb://u@h/db', 'name': 'db'}
+
+  let g:dbui_multidb_test_argv = ['definitely-not-a-client']
+  let caught = ''
+  try
+    call dbui_multidb#admin#query(db, 'SELECT 1')
+  catch
+    let caught = v:exception
+  endtry
+  call s:ok(caught =~# 'is not installed', 'a missing client is reported')
+
+  let g:dbui_multidb_test_argv = ['sh', '-c', 'exit 3']
+  let caught = ''
+  try
+    call dbui_multidb#admin#query(db, 'SELECT 1')
+  catch
+    let caught = v:exception
+  endtry
+  call s:ok(caught =~# 'failed (status 3)', 'a failing client is reported')
+endfunction
 let s:tests = [
       \ function('s:test_config'),
       \ function('s:test_is_master'),
@@ -1158,6 +1754,16 @@ let s:tests = [
       \ function('s:test_backups_section'),
       \ function('s:test_backup_files'),
       \ function('s:test_backup_plan'),
+      \ function('s:test_admin_section'),
+      \ function('s:test_admin_provider'),
+      \ function('s:test_admin_relabel'),
+      \ function('s:test_admin_danger'),
+      \ function('s:test_admin_mysql'),
+      \ function('s:test_admin_sqlserver'),
+      \ function('s:test_admin_mongodb'),
+      \ function('s:test_admin_redis'),
+      \ function('s:test_admin_mariadb'),
+      \ function('s:test_admin_query_errors'),
       \ function('s:test_dbmanager_commands'),
       \ function('s:test_notification_title'),
       \ function('s:test_auto_masters'),
