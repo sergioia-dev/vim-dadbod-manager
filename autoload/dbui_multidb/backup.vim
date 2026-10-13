@@ -296,22 +296,25 @@ function! dbui_multidb#backup#restore_supported(db) abort
 endfunction
 
 " The backup files of a connection, newest first. A file belongs to the
-" connection when its name starts with the same slug the planner generates,
-" which is what keeps two databases' backups apart in one directory.
+" The backup files of a connection, newest first. The connection's own folder
+" decides which files belong to it, so a file renamed by hand (or by any other
+" tool) keeps showing up instead of dropping out of the listing. A leading
+" "<database>-" left over from the flat layout the plugin used to write is still
+" recognised, so those files keep a clean label.
 "
 " Each entry is {path, label, prefix, ext, mtime}: label is the file name
 " without the connection prefix and without the extension, i.e. the timestamp
-" the planner generated.
+" the planner generated. prefix is that leading "<database>-" when the file
+" carries one, and '' for the files the planner writes now.
 function! dbui_multidb#backup#list(db) abort
-  let dir = s:dirname(dbui_multidb#config#get())
+  let dir = s:connection_dir(dbui_multidb#config#get(), a:db)
   if !isdirectory(dir)
     return []
   endif
 
   let prefix = s:slug(dbui_multidb#backup#dbname(a:db)) . '-'
-  let pattern = escape(dir, '*?[{') . '/' . escape(prefix, '*?[{') . '*'
   let entries = []
-  for path in split(glob(pattern), "\n")
+  for path in split(glob(escape(dir, '*?[{') . '/*'), "\n")
     if !filereadable(path)
       continue
     endif
@@ -321,13 +324,20 @@ function! dbui_multidb#backup#list(db) abort
     if name =~# '\.log$'
       continue
     endif
-    let stem = strpart(name, len(prefix))
+    " Only a file the old flat layout named after the connection carries a
+    " prefix; everything else is named as it is.
+    let entry_prefix = ''
+    let stem = name
+    if len(name) > len(prefix) && strpart(name, 0, len(prefix)) ==# prefix
+      let entry_prefix = prefix
+      let stem = strpart(name, len(prefix))
+    endif
     let ext = s:file_extension(stem)
     if !empty(ext)
       let stem = strpart(stem, 0, len(stem) - len(ext))
     endif
     call add(entries, {
-          \ 'path': path, 'label': stem, 'prefix': prefix,
+          \ 'path': path, 'label': stem, 'prefix': entry_prefix,
           \ 'ext': ext, 'mtime': getftime(path)})
   endfor
   call sort(entries, function('s:by_mtime'))
@@ -504,9 +514,9 @@ function! dbui_multidb#backup#delete_file(db, file) abort
   return 1
 endfunction
 
-" Rename one backup file, keeping its connection prefix and its extension:
-" only the label (the timestamp the planner generated) changes, so the listing
-" keeps grouping the file under its connection.
+" Rename one backup file, keeping its extension (and the "<database>-" prefix a
+" file from the old flat layout carries): only the label (the timestamp the
+" planner generated) changes, so the file stays in its connection's folder.
 function! dbui_multidb#backup#rename_file(file, label, ...) abort
   let path = s:file_path(a:file)
   if empty(path) || !filereadable(path)
@@ -534,6 +544,12 @@ function! dbui_multidb#backup#rename_file(file, label, ...) abort
   if rename(path, target) != 0
     call dbui_multidb#notify#error(printf('vim-dadbod-manager: cannot rename %s.', fnamemodify(path, ':~')))
     return 0
+  endif
+  " The log a job wrote next to the dump carries the same name, so it moves too.
+  let log = s:log_for(path)
+  if filereadable(log) && rename(log, s:log_for(target)) != 0
+    call dbui_multidb#notify#warning(printf('vim-dadbod-manager: renamed the backup but not its log (%s).',
+          \ fnamemodify(log, ':~')))
   endif
   call dbui_multidb#notify#info('Backup renamed: ' . fnamemodify(target, ':~'))
   return 1
@@ -911,10 +927,11 @@ endfunction
 function! s:context(db, cfg) abort
   let url = s:url(a:db)
   let schemes = s:schemes(a:db)
-  let dir = s:dirname(a:cfg)
+  let dir = s:connection_dir(a:cfg, a:db)
   let dbname = dbui_multidb#backup#dbname(a:db)
   let timestamp = 'backup-' . strftime('%Y-%m-%d-%H-%M-%S')
-  let name = printf('%s-%s', s:slug(dbname), timestamp)
+  " The folder already names the database, so the file does not have to.
+  let name = timestamp
   let parsed = s:parse(url)
   return {
         \ 'cfg': a:cfg, 'url': url, 'parsed': parsed, 'db': a:db,
@@ -961,6 +978,24 @@ function! s:dirname(cfg) abort
     let dir = substitute(dir, '/\+$', '', '')
   endif
   return empty(dir) ? 'dbui-backups' : dir
+endfunction
+
+" The folder a connection's backups live in: the configured backup_dir with
+" one folder per database, so a file renamed by hand (or by any other tool)
+" cannot fall out of the listing the way it did when the name had to carry the
+" connection.
+function! s:connection_dir(cfg, db) abort
+  let dir = s:dirname(a:cfg)
+  if dir !~# '/$'
+    let dir .= '/'
+  endif
+  return dir . s:slug(dbui_multidb#backup#dbname(a:db))
+endfunction
+
+" The folder a connection's backups live in, for callers that want to look at
+" them without going through the drawer (a test, a script, the user).
+function! dbui_multidb#backup#dir(db) abort
+  return s:connection_dir(dbui_multidb#config#get(), a:db)
 endfunction
 
 " The database name out of a parsed URL, falling back to a caller supplied name.

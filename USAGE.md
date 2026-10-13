@@ -35,7 +35,7 @@ let g:dbui_multidb_exclude = ['_test$', '_staging$']
 | `g:dbui_multidb_server_icons` | `{}` | Override the toggle icon of server nodes: `{'server_expanded': '▼', 'server_collapsed': '▶'}`. Unset keys fall back to `g:db_ui_icons`. |
 | `g:dbui_multidb_admin_section` | `1` | Draw the per-database **Administration** section (the provider's users and roles, with the destructive actions behind a confirmation) on expanded databases. `0` hides it. |
 | `g:dbui_multidb_backup_section` | `1` | Draw the per-database **Backups** section (lists backups, restores them, and offers a **New backup** action) on expanded client-side databases. `0` hides it. |
-| `g:dbui_multidb_backup_dir` | `'~/dbui-backups'` | Where client-side backups are written. `~` and `$VARS` are expanded. |
+| `g:dbui_multidb_backup_dir` | `'~/dbui-backups'` | Where client-side backups are written, one folder per database. `~` and `$VARS` are expanded. |
 | `g:dbui_multidb_backup_commands` | `{}` | Override a backup command by scheme (see [Backups](#backups)). |
 | `g:dbui_multidb_backup_options` | `{}` | Extra flags inserted into a built-in command, by scheme. |
 | `g:dbui_multidb_backup_server_dirs` | `{}` | Destination **on the server** for the server-side schemes (`sqlserver`, `clickhouse`, `oracle`), which have no Backups section and only back up through the planner API; see [Backups](#backups). |
@@ -297,9 +297,14 @@ The command for each scheme, and where the dump lands:
 | `clickhouse` | `clickhouse-client -q "BACKUP DATABASE … TO Disk(…)"` | **server** (`…_server_dirs.clickhouse` = disk name) |
 | `oracle` | `expdp` | **server** (`…_server_dirs.oracle` = Oracle `DIRECTORY` object) |
 
-Files are named `<database>-backup-YYYY-MM-DD-HH-MM-SS.<ext>` under the destination (the
-listed label is `backup-YYYY-MM-DD-HH-MM-SS`); an existing file
-is never overwritten (a `-1`, `-2`, … suffix is appended instead).
+Each database gets its own folder under the destination — `<database>` is the slug the
+plugin builds from the connection's database name — and the files in it are named
+`backup-YYYY-MM-DD-HH-MM-SS.<ext>`, which is also the listed label. The folder is what
+makes a file a backup of that connection: a file renamed by hand keeps its place in the
+section, and another database's folder is never listed. A flat `<database>-backup-…`
+name written by an older version is still recognised, with the leading `<database>-`
+left out of the label. An existing file is never overwritten (a `-1`, `-2`, … suffix is
+appended instead).
 
 The section appears only for client-side schemes — `postgresql`, `mysql`/`mariadb`,
 `sqlite`, `mongodb`, `duckdb`, `redis` — whose dumps land on this machine, where the
