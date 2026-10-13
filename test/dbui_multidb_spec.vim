@@ -2000,6 +2000,60 @@ function! s:test_schema_viewer_open() abort
   call s:eq(len(getbufinfo()), buffers, 'a missing command creates no buffer')
   call s:end_capture()
 endfunction
+
+" An installed command opens the viewer in the window a query buffer would use
+" (the same window "New query" picks), not in a float of its own, and its
+" terminal buffer carries the viewer's own buffer-local TermClose autocmd, which
+" wipes that buffer again -- and the window too, when the viewer had to create
+" it -- once the command exits. The suite is headless, so the autocmd is
+" asserted instead of waited for, and its callback is then called directly to
+" check the cleanup.
+function! s:test_schema_viewer_window() abort
+  call s:reset()
+  let g:dbs = {'Server': 'fakedb://u@h'}
+  let g:dbui_multidb_test_dbs = ['alpha']
+  let g:dbui_multidb_test_tables = ['orders']
+  " `sleep` with a URL as its argument is not a valid invocation, so the command
+  " exits at once and the viewer's job finishes without needing a TTY.
+  let g:dbui_multidb_schema_viewer_command = 'sleep'
+  call dbui_multidb#setup({'masters': ['Server']})
+
+  call s:begin_capture()
+  DBManager
+  let drawer = db_ui#drawer#get()
+  let lines = getline(1, '$')
+  call cursor(s:index_of(lines, 'Server\S*$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call cursor(s:index_of(lines, 'alpha\S*$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call cursor(s:index_of(lines, 'Tables (1)$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call cursor(s:index_of(lines, 'Schema viewer$') + 1, 1)
+
+  let windows = winnr('$')
+  call s:eq(drawer.dbui_multidb_schema_viewer(), 1,
+        \ 'an installed command opens the viewer')
+  let win = win_getid()
+  let buf = bufnr('%')
+  call s:eq(nvim_win_get_config(win).relative, '',
+        \ 'the viewer opens in a normal window, not a float')
+  call s:eq(getbufvar(buf, '&buftype'), 'terminal',
+        \ 'the viewer window holds a terminal buffer')
+
+  call s:eq(len(filter(copy(nvim_get_autocmds({'event': 'TermClose', 'buffer': buf})),
+        \ 'string(get(v:val, "command", "")) =~# "schema_viewer#term_close"')), 1,
+        \ 'the terminal buffer binds the schema viewer TermClose cleanup')
+  let own_split = getbufvar(buf, 'dbui_multidb_schema_viewer_split', 0)
+  call dbui_multidb#schema_viewer#term_close(buf)
+  call s:eq(bufexists(buf), 0, 'TermClose wipes the viewer terminal buffer')
+  call s:eq(winnr('$'), windows, 'TermClose leaves the window layout as it was')
+  call s:ok(own_split || nvim_win_is_valid(win),
+        \ 'the viewer reuses the window a query buffer would use')
+  call s:end_capture()
+endfunction
 let s:tests = [
       \ function('s:test_config'),
       \ function('s:test_is_master'),
@@ -2029,6 +2083,7 @@ let s:tests = [
       \ function('s:test_schema_viewer_section'),
       \ function('s:test_schema_viewer_command'),
       \ function('s:test_schema_viewer_open'),
+      \ function('s:test_schema_viewer_window'),
       \ function('s:test_notify'),
       \ ]
 

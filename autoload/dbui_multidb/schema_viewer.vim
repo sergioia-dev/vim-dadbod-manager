@@ -4,7 +4,7 @@
 " in a terminal. This module adds a "Schema viewer" leaf as the first child of a
 " database's Schemas section -- or of its Tables section for a database without
 " schema support, such as sqlite or a single-database mysql -- and opens sqlv for
-" that database in a centered floating terminal when the leaf is pressed.
+" that database in the window a query buffer would use when the leaf is pressed.
 "
 " sqlv is an optional dependency. The leaf is added either way; <CR> reports an
 " error instead of opening an empty window when the command is not installed.
@@ -122,64 +122,85 @@ function! dbui_multidb#schema_viewer#open() abort dict
     return 0
   endif
 
-  call s:open(argv)
+  call s:open(argv, self)
   return 1
 endfunction
 
-" Open argv in a centered floating terminal. In Neovim a rounded float holds a
-" termopen() buffer and a buffer-local TermClose autocmd returns to the drawer
-" once the command exits. In Vim the terminal goes into a popup; 'term_finish'
-" closes it with the job.
-function! s:open(argv) abort
-  let columns = &columns
-  let lines = &lines
-  let width = max([20, columns * 9 / 10])
-  let height = max([5, lines * 8 / 10])
+" Move to the window that a query buffer would open in -- db_ui/query.vim's
+" focus_window() -- so the viewer uses the same window as "New query" instead
+" of adding a split of its own. Returns 1 when a split had to be created because
+" no query or editable window was available.
+function! s:focus_query_window(drawer) abort
+  if type(get(a:drawer, 'get_query', 0)) !=# v:t_func
+    belowright new
+    return 1
+  endif
 
+  let win = win_getid()
+  let windows = winnr('$')
+  call a:drawer.get_query().focus_window()
+  return winnr('$') > windows && win_getid() !=# win ? 1 : 0
+endfunction
+
+" Open argv in the window a query buffer would use, so the viewer behaves like
+" the buffer that "New query" opens rather than a terminal split of its own: a
+" terminal buffer fills that window and a buffer-local TermClose autocmd drops
+" the buffer once the command exits, closing the window as well when the viewer
+" had to create it. In Vim 'term_finish': 'close' gives the same behaviour: the
+" terminal window closes itself when the job finishes.
+function! s:open(argv, drawer) abort
   if has('nvim')
+    let own_split = s:focus_query_window(a:drawer)
+    let win = win_getid()
+    " Remember the buffer to put back when the terminal goes away.
+    let prev = winbufnr(win)
     let buf = nvim_create_buf(v:false, v:true)
-    let win = nvim_open_win(buf, v:true, {
-          \ 'relative': 'editor',
-          \ 'row': (lines - height) / 2,
-          \ 'col': (columns - width) / 2,
-          \ 'width': width,
-          \ 'height': height,
-          \ 'border': 'rounded',
-          \ 'style': 'minimal',
-          \ })
+    call nvim_win_set_buf(win, buf)
+    let b:dbui_multidb_schema_viewer_win = win
+    let b:dbui_multidb_schema_viewer_split = own_split
+    let b:dbui_multidb_schema_viewer_prev = prev
     call termopen(a:argv)
-    call nvim_create_autocmd('TermClose', {
-          \ 'buffer': buf,
-          \ 'once': v:true,
-          \ 'callback': { -> s:nvim_close(win, buf) },
-          \ })
+    " A buffer-local autocmd so the terminal buffer disappears as soon as the
+    " command exits; it dies with the buffer. The buffer number is passed in from
+    " <abuf> because a buffer-local autocmd cannot carry a closure here:
+    " nvim_create_autocmd() rejects a Funcref or lambda callback with E5555
+    " ("Invalid 'callback': expected Lua function or Vim function name, got nil")
+    " on Neovim 0.12.
+    autocmd TermClose <buffer> ++once call dbui_multidb#schema_viewer#term_close(str2nr(expand('<abuf>')))
     startinsert
     return
   endif
 
-  if exists('*term_start') && exists('*popup_create')
-    let buf = term_start(a:argv, {'curwin': v:true, 'hidden': v:true, 'term_finish': 'close'})
-    call popup_create(buf, {
-          \ 'line': (lines - height) / 2,
-          \ 'col': (columns - width) / 2,
-          \ 'minwidth': width,
-          \ 'minheight': height,
-          \ 'mapping': 0,
-          \ 'border': [],
-          \ 'padding': [],
-          \ })
+  if exists('*term_start')
+    call term_start(a:argv, {'term_finish': 'close'})
     return
   endif
 
   call dbui_multidb#notify#error('vim-dadbod-manager: the schema viewer needs Neovim or a Vim with terminal support.')
 endfunction
 
-" TermClose callback: close the float and drop the terminal buffer.
-function! s:nvim_close(win, buf) abort
-  if nvim_win_is_valid(a:win)
-    call nvim_win_close(a:win, v:true)
+" TermClose callback: drop the viewer's terminal buffer, so quitting the command
+" (or the command failing) leaves the drawer as it was. The window goes away only
+" when the viewer created it; otherwise the buffer the window showed before the
+" viewer took it over comes back, so a query window is never lost. The buffer
+" comes from the autocmd (see s:open), and the window facts travel in buffer-local
+" variables because a buffer-local autocmd cannot capture them.
+function! dbui_multidb#schema_viewer#term_close(...) abort
+  let buf = a:0 > 0 ? a:1 : 0
+  if buf <= 0 || !bufexists(buf)
+    let buf = bufnr('%')
   endif
-  if bufexists(a:buf)
-    execute 'silent! bwipeout!' a:buf
+  let win = getbufvar(buf, 'dbui_multidb_schema_viewer_win', 0)
+  let own_split = getbufvar(buf, 'dbui_multidb_schema_viewer_split', 0)
+  let prev = getbufvar(buf, 'dbui_multidb_schema_viewer_prev', 0)
+  if has('nvim') && win > 0 && nvim_win_is_valid(win)
+    if own_split
+      call nvim_win_close(win, v:true)
+    elseif prev > 0 && nvim_buf_is_valid(prev)
+      call nvim_win_set_buf(win, prev)
+    endif
+  endif
+  if bufexists(buf)
+    execute 'silent! bwipeout!' buf
   endif
 endfunction
