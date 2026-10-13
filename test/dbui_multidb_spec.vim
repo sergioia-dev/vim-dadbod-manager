@@ -749,8 +749,9 @@ function! s:test_backup_files() abort
   " restore_plan: each restorable scheme.
   let pg = dbui_multidb#backup#restore_plan({'url': 'postgresql://u:pw@h:5432/app', 'name': 'app'}, f_old)
   call s:eq(pg.ok, 1, 'postgresql restores')
-  call s:eq(pg.argv[0], 'pg_restore', 'postgresql restore uses pg_restore')
-  call s:ok(index(pg.argv, '--clean') >= 0, 'postgresql restore drops and recreates')
+  call s:eq(pg.argv[0], 'psql', 'postgresql restore uses psql')
+  call s:eq(pg.kind, 'client_stdin', 'postgresql restore pipes the dump on stdin')
+  call s:ok(!empty(pg.stdin_file), 'postgresql restore names its stdin file')
   call s:ok(dbui_multidb#backup#display(pg) !~# 'pw', 'restore display redacts the password')
 
   let my = dbui_multidb#backup#restore_plan({'url': 'mysql://root:pw@h:3306/app', 'name': 'app'}, f_old)
@@ -840,6 +841,8 @@ function! s:test_backup_plan() abort
   call s:eq(plan.scheme, 'postgresql', 'postgresql is canonical')
   call s:eq(plan.argv[0], 'pg_dump', 'postgresql uses pg_dump')
   call s:ok(index(plan.argv, '--file') >= 0, 'postgresql writes a file')
+  call s:eq(plan.ext, '.sql', 'postgresql backs up to a plain SQL file')
+  call s:ok(index(plan.argv, '--format=custom') < 0, 'postgresql does not write a custom archive')
   call s:ok(dbui_multidb#backup#display(plan) !~# 's3cr3tpw', 'the display redacts the password')
 
   " mysql: the database name stays last

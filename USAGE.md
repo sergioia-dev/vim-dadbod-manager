@@ -287,7 +287,7 @@ The command for each scheme, and where the dump lands:
 
 | Scheme | Command | Destination |
 | --- | --- | --- |
-| `postgresql` | `pg_dump --format=custom` | local (`g:dbui_multidb_backup_dir`) |
+| `postgresql` | `pg_dump` (plain SQL) | local (`.sql`, under `g:dbui_multidb_backup_dir`) |
 | `mysql` / `mariadb` | `mysqldump` / `mariadb-dump --result-file` | local |
 | `sqlite` | `sqlite3 … "VACUUM INTO …"` (SQLite 3.27+) | local |
 | `mongodb` | `mongodump --archive --gzip` | local |

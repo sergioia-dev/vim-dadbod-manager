@@ -41,7 +41,7 @@ let s:aliases = {
 
 " The default file extension of each built-in backup.
 let s:extensions = {
-      \ 'postgresql': '.dump',
+      \ 'postgresql': '.sql',
       \ 'mysql': '.sql',
       \ 'sqlite': '.sqlite3',
       \ 'sqlserver': '.bak',
@@ -412,14 +412,14 @@ function! dbui_multidb#backup#restore_plan(db, file) abort
   let common = {'verb': 'Restore', 'file': file, 'target': file, 'log': log, 'writes_target': 0}
 
   if ctx.scheme ==# 'postgresql'
-    " pg_restore reads the same connection URL as psql, so only the program,
-    " the destructive options and the input file are added.
+    " psql reads the same connection URL as the dump does, so the plain SQL
+    " backup is piped into the client on stdin.
     let argv = db#adapter#postgresql#interactive(ctx.url)
-    let argv[0] = 'pg_restore'
     return s:plan(ctx, extend(common, {
-          \ 'kind': 'client_file',
-          \ 'argv': argv[0:1] + s:options(ctx) + ['--no-owner', '--clean', '--if-exists'] + argv[2:] + [file],
-          \ 'note': 'pg_restore drops and recreates the objects in the dump; the database itself is kept.'}))
+          \ 'kind': 'client_stdin',
+          \ 'argv': [argv[0]] + s:options(ctx) + ['-v', 'ON_ERROR_STOP=1'] + argv[1:],
+          \ 'stdin_file': file,
+          \ 'note': 'The plain SQL dump is piped into psql on stdin.'}))
   endif
 
   if ctx.scheme ==# 'mysql'
@@ -623,12 +623,12 @@ function! s:pg_plan(ctx) abort
   " dump specific options differ from the adapter's own command.
   let argv = db#adapter#postgresql#interactive(a:ctx.url)
   let argv[0] = 'pg_dump'
-  let ext = '.dump'
+  let ext = '.sql'
   let target = s:target(a:ctx.dir, a:ctx.name, ext)
   return s:plan(a:ctx, {
         \ 'kind': 'client_file', 'writes_target': 1, 'ext': ext, 'target': target,
-        \ 'argv': argv[0:1] + s:options(a:ctx) + ['--format=custom', '--file', target] + argv[2:],
-        \ 'note': 'Custom archive format, restorable with pg_restore.'})
+        \ 'argv': argv[0:1] + s:options(a:ctx) + ['--file', target] + argv[2:],
+        \ 'note': 'Plain SQL dump, restorable with psql.'})
 endfunction
 
 function! s:mysql_plan(ctx) abort
