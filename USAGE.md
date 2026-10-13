@@ -35,6 +35,8 @@ let g:dbui_multidb_exclude = ['_test$', '_staging$']
 | `g:dbui_multidb_server_icons` | `{}` | Override the toggle icon of server nodes: `{'server_expanded': '▼', 'server_collapsed': '▶'}`. Unset keys fall back to `g:db_ui_icons`. |
 | `g:dbui_multidb_admin_section` | `1` | Draw the per-database **Administration** section (the provider's users and roles, with the destructive actions behind a confirmation) on expanded databases. `0` hides it. |
 | `g:dbui_multidb_backup_section` | `1` | Draw the per-database **Backups** section (lists backups, restores them, and offers a **New backup** action) on expanded client-side databases. `0` hides it. |
+| `g:dbui_multidb_schema_viewer_section` | `1` | Draw the **Schema viewer** action as the first child of an expanded database's **Schemas** (or **Tables**) section. `0` hides it, and it is hidden anyway while that section is collapsed (see [Schema viewer](#schema-viewer)). |
+| `g:dbui_multidb_schema_viewer_command` | `'sqlv'` | The command the **Schema viewer** action runs. The connection URL is appended as the only argument. |
 | `g:dbui_multidb_backup_dir` | `'~/dbui-backups'` | Where client-side backups are written, one folder per database. `~` and `$VARS` are expanded. |
 | `g:dbui_multidb_backup_commands` | `{}` | Override a backup command by scheme (see [Backups](#backups)). |
 | `g:dbui_multidb_backup_options` | `{}` | Extra flags inserted into a built-in command, by scheme. |
@@ -252,6 +254,36 @@ that leaf, which is how `mongodb` omits Lock and `mysql` omits Effective access)
 The postgresql provider reads `pg_roles`; the others read their server's own
 catalogs (`mysql.user` and `role_edges`; MariaDB's `is_role`, `roles_mapping` and
 `global_priv`; `sys.server_principals`; `db.getUsers()`; `ACL LIST`).
+
+## Schema viewer
+
+An **expanded** database gets a **Schema viewer** action as the first child of its
+**Schemas** section — or of its **Tables** section, for a scheme that has no schemas
+(SQLite, and MySQL/MariaDB pinned to a single database). The action is only drawn
+while that section is expanded. `<CR>` on it opens the connection in
+[`sqlv`](https://github.com/sergioia-dev/sql-mer-tui) — a keyboard-driven terminal
+ER diagram — in a centered floating terminal. Leave the viewer with its own quit key
+(`q`) and the drawer is back.
+
+The action runs
+
+```
+sqlv <connection-url>
+```
+
+with the URL the connection resolves to (credentials included) passed as a single
+argument rather than through a shell, so a password is never echoed or parsed. The
+driver is inferred from the URL scheme: `postgresql`, `mysql`, `mariadb`, `sqlserver`
+and `sqlite` are supported.
+
+The viewer is an *optional* dependency. If the command is not on `PATH` the action
+reports `<command> is not installed (the schema viewer needs the sql-mer-tui
+package).` and opens nothing. This repository packages it on NixOS as
+`sql-mer-tui` and puts `sqlv` on the Neovim wrapper's `PATH`; elsewhere install it
+from [sergioia-dev/sql-mer-tui](https://github.com/sergioia-dev/sql-mer-tui).
+
+Set `g:dbui_multidb_schema_viewer_section` to `0` to hide the action, and
+`g:dbui_multidb_schema_viewer_command` to run a different command.
 
 ## Backups
 

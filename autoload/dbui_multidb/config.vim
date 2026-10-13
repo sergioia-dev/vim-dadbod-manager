@@ -12,6 +12,8 @@ function! dbui_multidb#config#defaults() abort
         \ 'notify': 1,
         \ 'server_icons': {},
         \ 'admin_section': 1,
+        \ 'schema_viewer_section': 1,
+        \ 'schema_viewer_command': 'sqlv',
         \ 'backup_section': 1,
         \ 'backup_dir': '~/dbui-backups',
         \ 'backup_commands': {},

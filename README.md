@@ -38,6 +38,7 @@ URL is rebuilt from the server's, so credentials, ports and query parameters
 - Neovim (tested on 0.12.4) or Vim 8.2+
 - [vim-dadbod](https://github.com/tpope/vim-dadbod) — provides `db#resolve()`,
   `db#url#parse()`, `db#url#format()` and the adapters used for discovery
+- Optional: [`sqlv`](https://github.com/sergioia-dev/sql-mer-tui) — powers the **Schema viewer** action (see [USAGE.md](USAGE.md#schema-viewer))
 
 The drawer this plugin extends is [vim-dadbod-ui](https://github.com/tpope/vim-dadbod-ui),
 and it is vendored in this repository: this plugin is the only one to install. A
@@ -120,6 +121,12 @@ Quick start: open the drawer with `:DBManager` and expand a connection. With
 databases — and whose URL names no specific database — becomes a server node;
 expand it to list its databases and to see its per-database sections: **Backups**
 everywhere, and an **Administration** section of users and roles — for `postgresql`, `mysql`, `mariadb`, `sqlserver`, `mongodb` and `redis` (see [USAGE.md](USAGE.md)).
+
+Expanding a database's **Schemas** (or **Tables**) section shows a **Schema viewer**
+action as its first child: `<CR>` opens the connection in
+[`sqlv`](https://github.com/sergioia-dev/sql-mer-tui), a floating terminal drawing the
+ER diagram. It is optional — with no `sqlv` on `PATH` the action reports it is missing
+(see [USAGE.md](USAGE.md#schema-viewer)).
 
 ## Vendored code
 

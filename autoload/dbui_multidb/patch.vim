@@ -68,6 +68,7 @@ function! dbui_multidb#patch#apply() abort
   " <CR> on a destructive Administration leaf is a call_method item whose type is
   " the method name, like the Backups leaves above.
   let drawer.dbui_multidb_admin_danger = function('dbui_multidb#admin#danger', drawer)
+  let drawer.dbui_multidb_schema_viewer = function('dbui_multidb#schema_viewer#open', drawer)
   let drawer.dbui_multidb_patched = 1
 
   return 1
@@ -97,6 +98,9 @@ endfunction
 function! dbui_multidb#patch#add_db(db) abort dict
   if !dbui_multidb#is_master(a:db)
     let result = self.dbui_multidb_orig_add_db(a:db)
+    " The Schema viewer is the first child of the Schemas/Tables section, so it
+    " is spliced in before the sections that are appended after the database.
+    call dbui_multidb#schema_viewer#append(self, a:db)
     " Administration above Backups, so a database's own contents come first and
     " its destructive actions last.
     call dbui_multidb#admin#append(self, a:db)

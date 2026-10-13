@@ -1782,6 +1782,224 @@ function! s:test_admin_query_errors() abort
   endtry
   call s:ok(caught =~# 'failed (status 3)', 'a failing client is reported')
 endfunction
+
+" The schema viewer is a level-2 leaf spliced in as the first child of the
+" Schemas section (or of the Tables section for databases without schemas),
+" so it is only placed when that section is already expanded.
+function! s:test_schema_viewer_append() abort
+  call s:reset()
+  let key = 'Server_g:dbs::alpha'
+  let db = {'key_name': key, 'expanded': 1, 'schema_support': 1}
+  let drawer = {'content': [
+        \ {'label': 'Schemas (2)', 'type': 'schemas', 'dbui_db_key_name': key,
+        \  'level': 1, 'expanded': 1},
+        \ {'label': 'public', 'type': 'schemas->items->public',
+        \  'dbui_db_key_name': key, 'level': 2, 'expanded': 0},
+        \ ]}
+
+  call s:eq(dbui_multidb#schema_viewer#append(drawer, db), 1,
+        \ 'the schema viewer is added to an expanded Schemas section')
+  call s:eq(len(drawer.content), 3, 'exactly one item is inserted')
+  call s:eq(get(drawer.content[1], 'label', ''), 'Schema viewer',
+        \ 'the schema viewer becomes the first child of the section')
+  call s:eq(get(drawer.content[1], 'type', ''), 'dbui_multidb_schema_viewer',
+        \ 'the schema viewer carries its own method type')
+  call s:eq(get(drawer.content[1], 'action', ''), 'call_method',
+        \ 'the schema viewer is dispatched through call_method')
+  call s:eq(get(drawer.content[1], 'level', 0), 2,
+        \ 'the schema viewer is a level-2 item')
+  call s:eq(get(drawer.content[1], 'dbui_db_key_name', ''), key,
+        \ 'the schema viewer is bound to its database')
+  call s:eq(get(drawer.content[1], 'icon', 'missing'),
+        \ dbui_multidb#schema_viewer#icon(),
+        \ 'the schema viewer keeps the shared icon lookup')
+  call s:eq(get(drawer.content[2], 'type', ''), 'schemas->items->public',
+        \ 'the existing schema list keeps its place below the viewer')
+
+  " A collapsed section has no room for the leaf.
+  let drawer.content[0].expanded = 0
+  call s:eq(dbui_multidb#schema_viewer#append(drawer, db), 0,
+        \ 'a collapsed Schemas section gets no schema viewer')
+  call s:eq(len(drawer.content), 3, 'a collapsed section is left untouched')
+  let drawer.content[0].expanded = 1
+
+  " A collapsed database has no room either.
+  call s:eq(dbui_multidb#schema_viewer#append(drawer,
+        \ {'key_name': key, 'expanded': 0, 'schema_support': 1}), 0,
+        \ 'a collapsed database gets no schema viewer')
+
+  " Only the section toggle matches: schema items share the type prefix.
+  let schemas_only = {'content': [
+        \ {'type': 'schemas->items->public', 'dbui_db_key_name': key,
+        \  'level': 2, 'expanded': 1},
+        \ ]}
+  call s:eq(dbui_multidb#schema_viewer#append(schemas_only, db), 0,
+        \ 'a schema toggle is not mistaken for the Schemas section')
+  call s:eq(len(schemas_only.content), 1, 'a schema toggle is left untouched')
+
+  " Another database's section is left alone.
+  let unrelated = {'content': [
+        \ {'type': 'schemas', 'dbui_db_key_name': 'Server_g:dbs::beta',
+        \  'level': 1, 'expanded': 1},
+        \ ]}
+  call s:eq(dbui_multidb#schema_viewer#append(unrelated, db), 0,
+        \ 'another database section is left alone')
+
+  " Databases without schema support fall back to the Tables section.
+  let tables = {'content': [
+        \ {'type': 'tables', 'dbui_db_key_name': key, 'level': 1, 'expanded': 1},
+        \ ]}
+  call s:eq(dbui_multidb#schema_viewer#append(tables,
+        \ {'key_name': key, 'expanded': 1, 'schema_support': 0}), 1,
+        \ 'databases without schemas get the viewer under Tables')
+  call s:eq(get(tables.content[1], 'type', ''), 'dbui_multidb_schema_viewer',
+        \ 'the Table fallback inserts the same leaf')
+
+  " schema_viewer_section = 0 disables the leaf.
+  let g:dbui_multidb_schema_viewer_section = 0
+  call s:eq(dbui_multidb#schema_viewer#append(drawer, db), 0,
+        \ 'schema_viewer_section = 0 disables the schema viewer')
+endfunction
+
+" In the drawer the leaf appears as the first child of the Tables section for a
+" database that exposes no schemas (the fake adapter), and disappears again
+" when that section is collapsed or the feature is switched off.
+function! s:test_schema_viewer_section() abort
+  call s:reset()
+  let g:dbs = {'Server': 'fakedb://u@h'}
+  let g:dbui_multidb_test_dbs = ['alpha']
+  let g:dbui_multidb_test_tables = ['orders', 'users']
+  call dbui_multidb#setup({'masters': ['Server']})
+
+  DBManager
+  let drawer = db_ui#drawer#get()
+  let lines = getline(1, '$')
+  call s:ok(s:index_of(lines, 'Schema viewer$') < 0,
+        \ 'the schema viewer is hidden while the database is collapsed')
+
+  call cursor(s:index_of(lines, 'Server\S*$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call cursor(s:index_of(lines, 'alpha\S*$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call s:ok(s:index_of(lines, 'Tables (2)$') > -1,
+        \ 'the fake database draws a Tables section')
+  call s:ok(s:index_of(lines, 'Schema viewer$') < 0,
+        \ 'the schema viewer is hidden while Tables is collapsed')
+
+  call cursor(s:index_of(lines, 'Tables (2)$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+
+  let section = s:index_of(lines, 'Tables (2)$')
+  let leaf = s:index_of(lines, 'Schema viewer$')
+  call s:ok(leaf > -1,
+        \ 'the schema viewer appears once the Tables section is expanded')
+  call s:eq(leaf, section + 1,
+        \ 'the schema viewer is the first child of the Tables section')
+
+  let indent = matchstr(lines[section], '^ *')
+  let icon = dbui_multidb#schema_viewer#icon()
+  call s:eq(lines[leaf],
+        \ indent . '  ' . icon . (empty(icon) ? '' : ' ') . 'Schema viewer',
+        \ 'the schema viewer renders below the section toggle')
+
+  let item = drawer.content[leaf]
+  call s:eq(get(item, 'type', ''), 'dbui_multidb_schema_viewer',
+        \ 'the drawer item dispatches the schema viewer method')
+  call s:eq(get(item, 'action', ''), 'call_method',
+        \ 'the drawer item is a call_method leaf')
+  call s:eq(get(item, 'dbui_db_key_name', ''), 'Server_g:dbs::alpha',
+        \ 'the drawer item is bound to its database')
+
+  call cursor(s:index_of(lines, 'Tables (2)$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call s:ok(s:index_of(lines, 'Schema viewer$') < 0,
+        \ 'collapsing the Tables section removes the schema viewer')
+
+  let g:dbui_multidb_schema_viewer_section = 0
+  call cursor(s:index_of(lines, 'Tables (2)$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call s:ok(s:index_of(lines, 'Tables (2)$') > -1,
+        \ 'the Tables section still expands with the feature disabled')
+  call s:ok(s:index_of(lines, 'Schema viewer$') < 0,
+        \ 'schema_viewer_section = 0 hides the schema viewer')
+endfunction
+
+" The viewer is invoked as "<command> <url>"; the URL goes through
+" vim-dadbod's resolution so environment variables and defaults are honoured.
+function! s:test_schema_viewer_command() abort
+  call s:reset()
+
+  let url = 'sqlite:/var/lib/plain.db'
+  let resolved = db#resolve(url)
+  call s:eq(dbui_multidb#schema_viewer#argv({'url': url}),
+        \ ['sqlv', empty(resolved) ? url : resolved],
+        \ 'the schema viewer runs sqlv with the resolved URL')
+
+  let g:dbui_multidb_schema_viewer_command = '/opt/sqlv'
+  call s:eq(dbui_multidb#schema_viewer#argv({'url': url})[0], '/opt/sqlv',
+        \ 'schema_viewer_command replaces the executable')
+
+  let g:dbui_multidb_schema_viewer_command = ''
+  call s:eq(dbui_multidb#schema_viewer#argv({'url': url})[0], 'sqlv',
+        \ 'an empty schema_viewer_command falls back to sqlv')
+  let g:dbui_multidb_schema_viewer_command = 'sqlv'
+
+  let $DBUI_MULTIDB_TEST_VIEWER_URL = 'postgres://u:p@h:5432/db'
+  let argv = dbui_multidb#schema_viewer#argv({'url': '$DBUI_MULTIDB_TEST_VIEWER_URL'})
+  call s:eq(argv[0], 'sqlv', 'the default command is sqlv')
+  call s:ok(argv[1] =~# 'u:p@h:5432/db', 'the environment URL is expanded')
+  unlet $DBUI_MULTIDB_TEST_VIEWER_URL
+
+  call s:eq(dbui_multidb#schema_viewer#argv({}), ['sqlv', ''],
+        \ 'a database without a URL yields an empty URL')
+endfunction
+
+" <CR> on the schema viewer checks for the executable before opening a window,
+" so a missing sqlv is reported instead of failing inside the terminal.
+function! s:test_schema_viewer_open() abort
+  call s:reset()
+  let g:dbs = {'Server': 'fakedb://u@h'}
+  let g:dbui_multidb_test_dbs = ['alpha']
+  let g:dbui_multidb_test_tables = ['orders']
+  let g:dbui_multidb_schema_viewer_command = 'vim-dadbod-manager-no-such-schema-viewer'
+  call dbui_multidb#setup({'masters': ['Server']})
+
+  call s:begin_capture()
+  DBManager
+  let drawer = db_ui#drawer#get()
+  let lines = getline(1, '$')
+  call cursor(s:index_of(lines, 'Server\S*$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call cursor(s:index_of(lines, 'alpha\S*$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call cursor(s:index_of(lines, 'Tables (1)$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+
+  let leaf = s:index_of(lines, 'Schema viewer$')
+  call s:ok(leaf > -1, 'the schema viewer is drawn for the missing-command test')
+  call s:eq(type(get(drawer, 'dbui_multidb_schema_viewer', 0)), v:t_func,
+        \ 'the patch binds the schema viewer method on the drawer')
+
+  call cursor(leaf + 1, 1)
+  let windows = winnr('$')
+  let buffers = len(getbufinfo())
+  call s:eq(drawer.dbui_multidb_schema_viewer(), 0,
+        \ 'a missing command does not open the viewer')
+  call s:ok(index(s:notified(),
+        \ 'vim-dadbod-manager: vim-dadbod-manager-no-such-schema-viewer is not installed (the schema viewer needs the sql-mer-tui package).') > -1,
+        \ 'a missing command is reported with the sql-mer-tui hint')
+  call s:eq(winnr('$'), windows, 'a missing command opens no window')
+  call s:eq(len(getbufinfo()), buffers, 'a missing command creates no buffer')
+  call s:end_capture()
+endfunction
 let s:tests = [
       \ function('s:test_config'),
       \ function('s:test_is_master'),
@@ -1807,6 +2025,10 @@ let s:tests = [
       \ function('s:test_dbmanager_commands'),
       \ function('s:test_notification_title'),
       \ function('s:test_auto_masters'),
+      \ function('s:test_schema_viewer_append'),
+      \ function('s:test_schema_viewer_section'),
+      \ function('s:test_schema_viewer_command'),
+      \ function('s:test_schema_viewer_open'),
       \ function('s:test_notify'),
       \ ]
 
