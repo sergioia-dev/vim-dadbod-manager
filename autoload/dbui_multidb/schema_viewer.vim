@@ -150,6 +150,12 @@ endfunction
 " terminal window closes itself when the job finishes.
 function! s:open(argv, drawer) abort
   if has('nvim')
+    " The drawer is the current window until s:focus_query_window() moves
+    " focus away, so record it and the cursor line now: quitting the viewer
+    " should return the user to the leaf they left, not to the query window
+    " the viewer took over.
+    let drawer_win = win_getid()
+    let drawer_line = line('.')
     let own_split = s:focus_query_window(a:drawer)
     let win = win_getid()
     " Remember the buffer to put back when the terminal goes away.
@@ -159,6 +165,10 @@ function! s:open(argv, drawer) abort
     let b:dbui_multidb_schema_viewer_win = win
     let b:dbui_multidb_schema_viewer_split = own_split
     let b:dbui_multidb_schema_viewer_prev = prev
+    " Where the drawer was when the viewer opened, so focus and the cursor can
+    " go back to that leaf when the command exits.
+    let b:dbui_multidb_schema_viewer_drawer_win = drawer_win
+    let b:dbui_multidb_schema_viewer_drawer_line = drawer_line
     call termopen(a:argv)
     " A buffer-local autocmd so the terminal buffer disappears as soon as the
     " command exits; it dies with the buffer. The buffer number is passed in from
@@ -184,7 +194,8 @@ endfunction
 " when the viewer created it; otherwise the buffer the window showed before the
 " viewer took it over comes back, so a query window is never lost. The buffer
 " comes from the autocmd (see s:open), and the window facts travel in buffer-local
-" variables because a buffer-local autocmd cannot capture them.
+" variables because a buffer-local autocmd cannot capture them. Finally focus and
+" the cursor go back to the drawer leaf the viewer was opened from.
 function! dbui_multidb#schema_viewer#term_close(...) abort
   let buf = a:0 > 0 ? a:1 : 0
   if buf <= 0 || !bufexists(buf)
@@ -193,6 +204,8 @@ function! dbui_multidb#schema_viewer#term_close(...) abort
   let win = getbufvar(buf, 'dbui_multidb_schema_viewer_win', 0)
   let own_split = getbufvar(buf, 'dbui_multidb_schema_viewer_split', 0)
   let prev = getbufvar(buf, 'dbui_multidb_schema_viewer_prev', 0)
+  let drawer_win = getbufvar(buf, 'dbui_multidb_schema_viewer_drawer_win', 0)
+  let drawer_line = getbufvar(buf, 'dbui_multidb_schema_viewer_drawer_line', 0)
   if has('nvim') && win > 0 && nvim_win_is_valid(win)
     if own_split
       call nvim_win_close(win, v:true)
@@ -202,5 +215,14 @@ function! dbui_multidb#schema_viewer#term_close(...) abort
   endif
   if bufexists(buf)
     execute 'silent! bwipeout!' buf
+  endif
+  " Return to the drawer leaf the viewer was opened from. This comes after the
+  " close/restore above: closing the viewer window moves focus around, and the
+  " drawer should be the window that ends up focused.
+  if has('nvim') && drawer_win > 0 && nvim_win_is_valid(drawer_win)
+    call win_gotoid(drawer_win)
+    if drawer_line > 0
+      call cursor(drawer_line, 1)
+    endif
   endif
 endfunction

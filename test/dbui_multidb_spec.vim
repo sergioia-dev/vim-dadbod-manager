@@ -2034,6 +2034,9 @@ function! s:test_schema_viewer_window() abort
   call cursor(s:index_of(lines, 'Schema viewer$') + 1, 1)
 
   let windows = winnr('$')
+  " The drawer is the current window here, with the cursor on the viewer leaf.
+  let drawer_win = win_getid()
+  let drawer_line = line('.')
   call s:eq(drawer.dbui_multidb_schema_viewer(), 1,
         \ 'an installed command opens the viewer')
   let win = win_getid()
@@ -2052,6 +2055,72 @@ function! s:test_schema_viewer_window() abort
   call s:eq(winnr('$'), windows, 'TermClose leaves the window layout as it was')
   call s:ok(own_split || nvim_win_is_valid(win),
         \ 'the viewer reuses the window a query buffer would use')
+  call s:eq(win_getid(), drawer_win,
+        \ 'TermClose returns focus to the drawer window')
+  call s:eq(line('.'), drawer_line,
+        \ 'TermClose restores the cursor to the drawer leaf')
+  call s:end_capture()
+endfunction
+
+" Quitting the viewer puts focus and the cursor back on the drawer leaf it was
+" opened from, including when it took over an existing query window (the case
+" where the drawer line would otherwise be lost: focus would stay in the query
+" window). The suite is headless, so the autocmd is asserted instead of waited
+" for, and its callback is then called directly to check the cleanup.
+function! s:test_schema_viewer_return() abort
+  call s:reset()
+  let g:dbs = {'Server': 'fakedb://u@h'}
+  let g:dbui_multidb_test_dbs = ['alpha']
+  let g:dbui_multidb_test_tables = ['orders']
+  let g:dbui_multidb_schema_viewer_command = 'sleep'
+  call dbui_multidb#setup({'masters': ['Server']})
+
+  call s:begin_capture()
+  DBManager
+  let drawer = db_ui#drawer#get()
+  let lines = getline(1, '$')
+  call cursor(s:index_of(lines, 'Server\S*$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call cursor(s:index_of(lines, 'alpha\S*$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call cursor(s:index_of(lines, 'Tables (1)$') + 1, 1)
+  call drawer.toggle_line('')
+  let lines = getline(1, '$')
+  call cursor(s:index_of(lines, 'Schema viewer$') + 1, 1)
+  let drawer_win = win_getid()
+  let drawer_line = line('.')
+
+  " An empty split stands in for a query window: focus_window() finds it and
+  " reuses it instead of opening a split of its own.
+  belowright new
+  let viewer_win = win_getid()
+  let query_buf = winbufnr(viewer_win)
+  call win_gotoid(drawer_win)
+  let windows = winnr('$')
+
+  call s:eq(drawer.dbui_multidb_schema_viewer(), 1,
+        \ 'an installed command opens the viewer')
+  call s:ok(win_getid() != drawer_win,
+        \ 'the viewer takes over a query window, not the drawer window')
+  let buf = bufnr('%')
+  call s:eq(getbufvar(buf, 'dbui_multidb_schema_viewer_split', 0), 0,
+        \ 'the viewer reused the existing window instead of splitting')
+  call s:eq(getbufvar(buf, 'dbui_multidb_schema_viewer_drawer_win', 0), drawer_win,
+        \ 'the viewer remembers the drawer window')
+  call s:eq(getbufvar(buf, 'dbui_multidb_schema_viewer_drawer_line', 0),
+        \ drawer_line, 'the viewer remembers the drawer cursor line')
+
+  call dbui_multidb#schema_viewer#term_close(buf)
+  call s:eq(bufexists(buf), 0, 'TermClose wipes the viewer terminal buffer')
+  call s:eq(winnr('$'), windows, 'TermClose leaves the window layout as it was')
+  call s:eq(nvim_win_get_buf(viewer_win), query_buf,
+        \ 'the query buffer the viewer took over comes back')
+  call s:eq(win_getid(), drawer_win,
+        \ 'TermClose returns focus to the drawer window')
+  call s:eq(line('.'), drawer_line,
+        \ 'TermClose restores the cursor to the drawer leaf')
   call s:end_capture()
 endfunction
 let s:tests = [
@@ -2084,6 +2153,7 @@ let s:tests = [
       \ function('s:test_schema_viewer_command'),
       \ function('s:test_schema_viewer_open'),
       \ function('s:test_schema_viewer_window'),
+      \ function('s:test_schema_viewer_return'),
       \ function('s:test_notify'),
       \ ]
 
